@@ -566,6 +566,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "scirust-verify-artifacts"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "scirust-verify-model",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "scirust-verify-cargo"
 version = "0.1.0"
 dependencies = [
@@ -574,6 +586,7 @@ dependencies = [
  "scirust-verify-model",
  "scirust-verify-numerics",
  "scirust-verify-runner",
+ "serde",
  "serde_json",
  "thiserror",
 ]
@@ -584,6 +597,8 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "hex",
+ "scirust-verify-artifacts",
  "scirust-verify-cargo",
  "scirust-verify-core",
  "scirust-verify-determinism",

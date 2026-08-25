@@ -26,6 +26,7 @@ use scirust_verify_determinism::DeterminismProvider;
 use scirust_verify_model::TOOL_IDENTITY;
 use scirust_verify_store::RunsRoot;
 
+mod artifacts_cli;
 mod scirust_ingest;
 mod signature_cli;
 
@@ -167,6 +168,22 @@ enum Command {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Verify a SciCapsule v1 bundle (manifest schema + payload integrity).
+    VerifyCapsule {
+        /// Directory containing manifest.json and payloads.
+        bundle: PathBuf,
+        /// Alternative output root for `.scirust-verify`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Ingest a Forge candidate envelope as an integrity attestation.
+    IngestForge {
+        /// Path to the candidate envelope JSON.
+        envelope: PathBuf,
+        /// Alternative output root for `.scirust-verify`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Ingest a completed SciRust test-protocol evidence bundle into a new dossier run.
     IngestScirust {
         /// Directory of the protocol bundle containing summary.txt.
@@ -250,6 +267,32 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             signature,
             project,
         } => signature_cli::verify_signature(&run, public_key, signature, project, cli.json),
+        Command::VerifyCapsule { bundle, output } => {
+            match artifacts_cli::verify_capsule(&artifacts_cli::IngestOptions {
+                input: bundle,
+                project_root: current_dir(),
+                output_root: output.map(|o| o.join(".scirust-verify")),
+            }) {
+                Ok(o) => Ok(artifact_exit_ok(&o, cli.json)),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::from(2))
+                }
+            }
+        }
+        Command::IngestForge { envelope, output } => {
+            match artifacts_cli::ingest_forge(&artifacts_cli::IngestOptions {
+                input: envelope,
+                project_root: current_dir(),
+                output_root: output.map(|o| o.join(".scirust-verify")),
+            }) {
+                Ok(o) => Ok(artifact_exit_ok(&o, cli.json)),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::from(2))
+                }
+            }
+        }
         Command::IngestScirust {
             bundle,
             project,
@@ -1182,6 +1225,30 @@ fn ingest_scirust(
             ExitCode::from(1)
         },
     )
+}
+
+fn artifact_exit_ok(outcome: &artifacts_cli::IngestOutcome, json: bool) -> ExitCode {
+    if json {
+        let doc = serde_json::json!({
+            "run_id": outcome.run_id.to_string(),
+            "overall_verdict": outcome.verdict_label,
+            "claims": outcome.claims.iter().map(|(id, lvl, v)| serde_json::json!({
+                "claim": id, "level": lvl, "verdict": v,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{doc}");
+    } else {
+        println!("run {}", outcome.run_id);
+        for (id, level, verdict) in &outcome.claims {
+            println!("  [{level:>13}] {id:<44} {verdict}");
+        }
+        println!("overall verdict: {}", outcome.verdict_label);
+    }
+    if outcome.verdict_label == "PASS" || outcome.verdict_label == "PASS_WITH_GAPS" {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
 }
 
 fn doctor() -> Result<ExitCode, CliError> {
