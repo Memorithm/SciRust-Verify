@@ -15,6 +15,7 @@ check = false
 build = true
 test = false
 doc = false
+sbom = true
 deny = "off"
 
 [numerics]
@@ -26,3 +27,6 @@ id = "oracle-comparison"
 program = "cargo"
 args = ["run", "--quiet", "--bin", "numeric-pass"]
 level = "required"
+
+[claims]
+sbom_generated = "informational"

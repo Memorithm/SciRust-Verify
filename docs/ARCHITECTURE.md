@@ -39,6 +39,7 @@ machine report / human report
 | `scirust-verify-determinism` | Cross-process fingerprinting engine incl. thread-count variation. |
 | `scirust-verify-report` | Report rendering from persisted documents only (never scrapes its own Markdown). |
 | `scirust-verify-scirust` | SciRust test-protocol adapter: parses protocol `summary.txt` bundles and maps gates to claims bijectively (`PASS→Verified`, `FAIL→Failed`, `SKIP→Skipped`). Wired into the CLI via `scirust-verify ingest-scirust <bundle>`. |
+| `scirust-verify-artifacts` | Validation-first ingestion of ecosystem formats: SciCapsule v1 manifests (schema + payload integrity) and Forge candidate envelopes v1 (canonical fingerprint recomputation). Envelope consistency is attested; Forge correctness evaluation is explicitly not independent verification. |
 | `scirust-verify-cli` | Thin binary: parse args → library calls → format output → exit code. |
 
 Dependency direction is strictly downward: model ← everything; report/store
@@ -145,10 +146,18 @@ without changing the domain model. See [THREAT_MODEL.md](THREAT_MODEL.md).
 
 * **SciRust** — completed: `ingest-scirust` normalizes finished protocol
   bundles into dossiers while attaching the original summary verbatim.
-* **SciCapsule** — a `.scicap` provider would appear as one more
-  `VerificationProvider`; no format work is faked today.
+* **SciCapsule** — implemented for what the upstream schema defines:
+  `verify-capsule` validates v1 manifests against the exact contract of
+  `scirust-capsule-schema` and verifies every payload digest + byte length.
+  Entrypoint execution remains UNSUPPORTED until upstream defines semantics.
+* **Forge** — implemented for attestation: `ingest-forge` recomputes the
+  candidate envelope fingerprint from canonical bytes and binds fields into
+  a dossier; Forge's own evaluation is never treated as independent
+  verification (trust scope recorded in evidence metadata).
 * **Forge** — candidates become Artifacts; Forge's own evaluation may be
   ingested as evidence but never automatically counts as independent
   verification.
-* **Hub** — reports already contain compact machine summaries suitable for a
-  registry presentation layer.
+* **SBOM** — implemented: `cargo:sbom` emits an SPDX 2.3 document derived
+  strictly from resolved `cargo metadata`; unknown facts are `NOASSERTION`,
+  never fabricated. Enabled via `[cargo] sbom = true` plus the
+  `sbom_generated` claim at any level.

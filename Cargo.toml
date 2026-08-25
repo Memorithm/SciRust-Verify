@@ -12,6 +12,7 @@ members = [
     "crates/scirust-verify-report",
     "crates/scirust-verify-scirust",
     "crates/scirust-verify-signature",
+    "crates/scirust-verify-artifacts",
     "crates/scirust-verify-cli",
 ]
 
@@ -35,6 +36,7 @@ scirust-verify-determinism = { path = "crates/scirust-verify-determinism" }
 scirust-verify-report = { path = "crates/scirust-verify-report" }
 scirust-verify-scirust = { path = "crates/scirust-verify-scirust" }
 scirust-verify-signature = { path = "crates/scirust-verify-signature" }
+scirust-verify-artifacts = { path = "crates/scirust-verify-artifacts" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -7,6 +7,8 @@
 
 #![deny(missing_docs)]
 
+pub mod sbom;
+
 use std::collections::BTreeMap;
 
 use scirust_verify_core::manifest::{CargoSection, DenyMode};
@@ -73,6 +75,125 @@ impl CargoProvider {
             timeout: request.default_timeout,
             stdout_limit_bytes: request.stdout_limit,
             stderr_limit_bytes: request.stderr_limit,
+        })
+    }
+}
+
+impl CargoProvider {
+    #[allow(clippy::too_many_lines)]
+    fn execute_sbom(
+        &self,
+        check: &Check,
+        env: &mut ExecutionContext<'_>,
+    ) -> Result<CheckExecution, scirust_verify_core::planning::PipelineFailure> {
+        let CheckAction::Command { command, .. } = &check.action else {
+            return Ok(CheckExecution::minimal(
+                check.id.clone(),
+                CheckStatus::Unsupported {
+                    reason: "sbom executes command checks only".into(),
+                },
+            ));
+        };
+        let cwd = env.resolve_cwd(command.cwd.as_deref());
+        let mut spec = scirust_verify_runner::CommandSpec::new(command.program.clone(), cwd)
+            .args(command.args.iter().cloned())
+            .timeout(check.timeout);
+        spec.stdout_limit = check.stdout_limit_bytes.max(1);
+        spec.stderr_limit = check.stderr_limit_bytes.max(1);
+
+        let started = chrono::Utc::now();
+        let record = run_command(&spec)?;
+        let ended = chrono::Utc::now();
+
+        let mut payloads = BTreeMap::new();
+        payloads.insert(
+            "logs/cargo-sbom-metadata.json".into(),
+            record.stdout.data.clone(),
+        );
+
+        let sbom_result = crate::sbom::from_cargo_metadata(
+            &record.stdout_lossy(),
+            env.artifact.as_str(),
+            &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let mut spdx_payload = None;
+        let (outcome, summary) = match &sbom_result {
+            Ok(doc) => {
+                let json = serde_json::to_vec_pretty(doc).unwrap_or_default();
+                spdx_payload = Some(("sbom/spdx.json".to_owned(), json));
+                (
+                    Verdict::Verified,
+                    format!(
+                        "SPDX 2.3 SBOM generated with {} package(s)",
+                        doc.packages.len()
+                    ),
+                )
+            }
+            Err(e) => (Verdict::NotVerified, format!("SBOM generation failed: {e}")),
+        };
+
+        if let Some((path, bytes)) = &spdx_payload {
+            payloads.insert(path.clone(), bytes.clone());
+        }
+
+        let ev_id = env.sink.next_id();
+        let mut builder = scirust_verify_model::Evidence::builder(
+            ev_id.clone(),
+            EvidenceKind::DependencyGraph,
+            "cargo-provider",
+        )
+        .artifact(env.artifact.clone())
+        .scope(env.scope.clone())
+        .status(if outcome == Verdict::Verified {
+            EvidenceStatus::Ok
+        } else {
+            EvidenceStatus::Failed
+        })
+        .observation(Observation::new(
+            "exit_status",
+            check.id.as_str(),
+            ObservedValue::Int(record.exit_code().unwrap_or(-1) as i64),
+        ));
+
+        // Attachments must be declared on the evidence AND have payloads.
+        let manifest_digest = scirust_verify_model::Digest::sha256_hex(&record.stdout.data);
+        builder = builder.attachment(scirust_verify_model::Attachment {
+            path: "logs/cargo-sbom-metadata.json".into(),
+            size_bytes: record.stdout.data.len() as u64,
+            digest: manifest_digest,
+            media_type: Some("application/json".into()),
+        });
+        if let Some((path, bytes)) = &spdx_payload {
+            builder = builder.attachment(scirust_verify_model::Attachment {
+                path: path.clone(),
+                size_bytes: bytes.len() as u64,
+                digest: scirust_verify_model::Digest::sha256_hex(bytes),
+                media_type: Some("application/json".into()),
+            });
+        }
+        if let Ok(doc) = &sbom_result {
+            builder = builder.observation(Observation::new(
+                "package_count",
+                check.id.as_str(),
+                ObservedValue::UInt(doc.packages.len() as u64),
+            ));
+        }
+        let evidence = builder.build();
+        env.sink.add_evidence(evidence, &payloads)?;
+
+        Ok(CheckExecution {
+            check_id: check.id.clone(),
+            started_at_utc: Some(started),
+            ended_at_utc: Some(ended),
+            status: CheckStatus::Executed {
+                exit_code: record.exit_code(),
+            },
+            outcome,
+            summary,
+            observations: vec![],
+            evidence_ids: vec![ev_id],
+            notes: vec![],
         })
     }
 }
@@ -210,6 +331,28 @@ impl VerificationProvider for CargoProvider {
             ));
         }
 
+        if self.section.sbom && request.claim_levels.contains_key("sbom_generated") {
+            checks.push(Check {
+                id: CheckId::new("cargo:sbom"),
+                provider: "cargo".into(),
+                purpose: "Generate SPDX 2.3 SBOM from resolved dependency metadata".into(),
+                claims: vec![ClaimId::from("sbom_generated")],
+                requirement: RequirementLevel::Informational,
+                action: CheckAction::Command {
+                    command: CommandTemplate {
+                        program: "cargo".into(),
+                        args: vec!["metadata".into(), "--format-version".into(), "1".into()],
+                        cwd: None,
+                        env: Default::default(),
+                    },
+                    expect: ExitExpectation::Success,
+                },
+                timeout: request.default_timeout,
+                stdout_limit_bytes: 64 * 1024 * 1024,
+                stderr_limit_bytes: request.stderr_limit,
+            });
+        }
+
         if self.section.deny != DenyMode::Off
             && request
                 .claim_levels
@@ -255,6 +398,12 @@ impl VerificationProvider for CargoProvider {
                 },
             ));
         };
+
+        // The SBOM check post-processes cargo metadata into an SPDX 2.3
+        // document attached to its own evidence.
+        if check.id.as_str() == "cargo:sbom" {
+            return self.execute_sbom(check, env);
+        }
 
         // Availability probes produce honest SKIPPED evidence.
         let availability: Option<(&str, &str)> = match command.program.as_str() {
