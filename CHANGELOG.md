@@ -59,5 +59,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
   detection, invalid manifests and replay/diff flows.
 - Self-verification: repository-root scirust-verify.toml drives
   `scirust-verify verify .` as an acceptance gate.
+- SciRust protocol ingestion: `scirust-verify ingest-scirust <bundle>` turns
+  a completed functional-acceptance evidence bundle into an integrity-sealed
+  dossier; the original summary.txt is attached verbatim and anchored by
+  digest, gate statuses map bijectively (SKIP never becomes Verified), known
+  gates link to typed claims while unknown gates become custom claims.
+- Store hardening: duplicate evidence-id writes rejected; self-referencing
+  `derived_from` links rejected at finalization.
+- CLI exit-code contract enforced by type: missing runs exit 1, usage/config
+  problems exit 2, infrastructure failures exit 3.
+- E2E coverage additions: init without clobbering, doctor/schema, plan
+  listing, verify --json machine output, unicode/space path handling,
+  thread-level determinism variation path, protocol ingestion semantics.
 - Documentation: README, ARCHITECTURE, EVIDENCE_FORMAT, THREAT_MODEL,
   SECURITY, CONTRIBUTING and this changelog.

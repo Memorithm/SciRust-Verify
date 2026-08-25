@@ -371,6 +371,91 @@ fn replay_creates_new_linked_run_and_diff_compares() {
 }
 
 #[test]
+fn verify_json_emits_parseable_machine_output() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let out = cli()
+        .args(["verify", project.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("verify --json must emit valid JSON");
+    assert_eq!(
+        doc.get("overall_verdict").and_then(|v| v.as_str()),
+        Some("PASS")
+    );
+    assert!(doc
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .starts_with("run-"));
+}
+
+#[test]
+fn scirust_protocol_ingestion_preserves_semantics() {
+    // Synthetic protocol bundle exercising all three source statuses.
+    let bundle = tempfile_dir("scirust-protocol-bundle");
+    std::fs::write(
+        bundle.join("summary.txt"),
+        "commit=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\nbranch=master\ntimestamp=2026-08-25T00:00:00Z\npackages=90\ngate.fmt=PASS (required, 3s)\ngate.build=PASS (required, 100s)\ngate.test=FAIL (required, 200s -- 2 oracles diverged)\ngate.aarch64=SKIP (required, 0s)\ngate.gpu=SKIP (optional, 0s)\nverdict=FAIL\n",
+    )
+    .unwrap();
+
+    let store = tempfile_dir("ingest-store");
+    let out = cli()
+        .args([
+            "ingest-scirust",
+            bundle.to_str().unwrap(),
+            "--output",
+            store.to_str().unwrap(),
+            "--json",
+        ])
+        .current_dir(&store)
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    // A FAIL protocol must not exit 0.
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON on stdout");
+    assert_eq!(
+        doc.get("overall_verdict").and_then(|v| v.as_str()),
+        Some("FAIL")
+    );
+
+    // Inspect the dossier: original summary attached verbatim; SKIP stays SKIPPED.
+    let run_id = doc.get("run_id").and_then(|v| v.as_str()).unwrap();
+    let run_dir = store.join(format!(".scirust-verify/runs/{run_id}"));
+    let summary_attached =
+        std::fs::read_to_string(run_dir.join("logs/scirust-summary.txt")).unwrap();
+    assert!(summary_attached.contains("verdict=FAIL"));
+
+    let evals = std::fs::read_to_string(run_dir.join("evaluations.json")).unwrap();
+    assert!(
+        evals.contains("tests_pass@test"),
+        "gate-linked claim id expected: {evals}"
+    );
+    assert!(evals.contains("\"failed\""), "{evals}");
+
+    // Integrity of an ingested bundle holds.
+    let integrity = cli()
+        .args(["report", run_id, "--check-integrity"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        integrity.status.success(),
+        "{}",
+        String::from_utf8_lossy(&integrity.stderr)
+    );
+}
+
+#[test]
 fn primary_commands_have_help_and_stable_behavior() {
     for cmd in [
         "init", "inspect", "plan", "verify", "report", "replay", "diff", "doctor", "schema",

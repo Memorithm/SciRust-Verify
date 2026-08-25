@@ -353,3 +353,49 @@ fn verdict_semantics_are_preserved_through_storage() {
     );
     assert_eq!(exec.status.base_verdict(), Verdict::Verified);
 }
+
+#[test]
+fn duplicate_evidence_id_writes_are_rejected() {
+    let root = tmp_root("dup-ev");
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    let (ev, payloads) = sample_evidence("ev-0001");
+    store.add_evidence(&ev, &payloads).unwrap();
+    // Same id again — even with identical content — must fail.
+    assert!(matches!(
+        store.add_evidence(&ev, &payloads),
+        Err(StoreError::Corrupt { .. })
+    ));
+}
+
+#[test]
+fn self_deriving_evidence_fails_finalize() {
+    use scirust_verify_model::{Attachment, Digest, EvidenceKind};
+    let root = tmp_root("self-derive");
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    store.write_artifact(&sample_artifact()).unwrap();
+    store.write_claims(&[]).unwrap();
+    let canonical = scirust_verify_model::canonical_json(&Vec::<Check>::new()).unwrap();
+    store
+        .write_plan(
+            &[],
+            scirust_verify_model::Digest::sha256_hex(canonical.as_bytes()),
+        )
+        .unwrap();
+
+    let att = Attachment {
+        path: "logs/self.log".into(),
+        size_bytes: 2,
+        digest: Digest::sha256_hex(b"ok"),
+        media_type: None,
+    };
+    let mut payloads = BTreeMap::new();
+    payloads.insert("logs/self.log".to_owned(), b"ok".to_vec());
+    let ev = Evidence::builder(EvidenceId::from("ev-0001"), EvidenceKind::Fingerprint, "x")
+        .attachment(att)
+        .derived_from([EvidenceId::from("ev-0001")])
+        .build();
+    store.add_evidence(&ev, &payloads).unwrap();
+    assert!(matches!(store.finalize(), Err(StoreError::Corrupt { .. })));
+}

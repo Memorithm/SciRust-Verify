@@ -26,6 +26,8 @@ use scirust_verify_determinism::DeterminismProvider;
 use scirust_verify_model::TOOL_IDENTITY;
 use scirust_verify_store::RunsRoot;
 
+mod scirust_ingest;
+
 #[derive(Parser)]
 #[command(
     name = "scirust-verify",
@@ -114,6 +116,17 @@ enum Command {
     Doctor,
     /// Print the persisted-document schema catalog.
     Schema,
+    /// Ingest a completed SciRust test-protocol evidence bundle into a new dossier run.
+    IngestScirust {
+        /// Directory of the protocol bundle containing summary.txt.
+        bundle: PathBuf,
+        /// Project root the dossier attaches to (default: current directory).
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Alternative output root for `.scirust-verify`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -158,6 +171,16 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
         Command::Diff { run_a, run_b } => diff(&run_a, &run_b),
         Command::Doctor => doctor(),
         Command::Schema => schema(),
+        Command::IngestScirust {
+            bundle,
+            project,
+            output,
+        } => ingest_scirust(
+            bundle,
+            project.unwrap_or_else(current_dir),
+            output,
+            cli.json,
+        ),
     }
 }
 
@@ -324,7 +347,14 @@ fn toml_toml_string(manifest: &Manifest) -> Result<String, CliError> {
         s.push_str(&format!("[artifact]\nname = \"{name}\"\n\n"));
     }
     s.push_str("[verification]\nprofile = \"basic\"\n\n");
-    s.push_str("[cargo]\nenabled = true\nfmt = true\nclippy = true\ncheck = false\nbuild = true\ntest = true\ndoc = false\ndeny = \"optional\"\n\n");
+    let enabled_flag = if manifest.cargo.enabled {
+        "true"
+    } else {
+        "false"
+    };
+    s.push_str(&format!(
+        "[cargo]\nenabled = {enabled_flag}\nfmt = true\nclippy = true\ncheck = false\nbuild = true\ntest = true\ndoc = false\ndeny = \"optional\"\n\n"
+    ));
     s.push_str("[determinism]\nenabled = false\nruns = 3\nprogram = [\"cargo\", \"run\", \"--quiet\"]\nmode = \"stdout_digest\"\n# thread_levels = [1, 2, 4]\n# thread_env = \"RAYON_NUM_THREADS\"\n\n");
     s.push_str("[claims]\n");
     let mut sorted: Vec<_> = manifest.claims.iter().collect();
@@ -470,8 +500,13 @@ fn plan(path: PathBuf, profile: Option<String>, json: bool) -> Result<ExitCode, 
                 c.requirement.to_string()
             );
             println!("  purpose: {}", c.purpose);
-            if let scirust_verify_model::CheckAction::Command { command, .. } = &c.action {
-                println!("  command: {} {}", command.program, command.args.join(" "));
+            match &c.action {
+                scirust_verify_model::CheckAction::Command { command, .. } => {
+                    println!("  command: {} {}", command.program, command.args.join(" "));
+                }
+                scirust_verify_model::CheckAction::Composite { engine, .. } => {
+                    println!("  engine:  {engine}");
+                }
             }
         }
         println!("\nrun `scirust-verify verify` to execute this plan.");
@@ -787,6 +822,44 @@ fn push_diff_line(out: &mut Vec<String>, label: &str, a: &Option<String>, b: &Op
         (None, Some(b)) => out.push(format!("added     {label}: now `{b}`")),
         (None, None) => {}
     }
+}
+
+fn ingest_scirust(
+    bundle: PathBuf,
+    project: PathBuf,
+    output: Option<PathBuf>,
+    json: bool,
+) -> Result<ExitCode, CliError> {
+    let opts = scirust_ingest::IngestOptions {
+        bundle_dir: bundle,
+        project_root: project,
+        output_root: output.map(|o| o.join(".scirust-verify")),
+    };
+    let outcome = scirust_ingest::ingest(&opts).map_err(|e| CliError::usage(e.to_string()))?;
+    if json {
+        let doc = serde_json::json!({
+            "tool": TOOL_IDENTITY,
+            "run_id": outcome.run_id.to_string(),
+            "overall_verdict": outcome.verdict_label,
+            "claims": outcome.claims.iter().map(|(id, lvl, v)| serde_json::json!({
+                "claim": id, "level": lvl, "verdict": v,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{doc}");
+    } else {
+        println!("ingested protocol bundle as run {}", outcome.run_id);
+        for (id, level, verdict) in &outcome.claims {
+            println!("  [{level:>13}] {id:<44} {verdict}");
+        }
+        println!("overall verdict: {}", outcome.verdict_label);
+    }
+    Ok(
+        if outcome.verdict_label == "PASS" || outcome.verdict_label == "PASS_WITH_GAPS" {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        },
+    )
 }
 
 fn doctor() -> Result<ExitCode, CliError> {
