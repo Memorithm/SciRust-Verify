@@ -611,24 +611,23 @@ fn assess_source_consistency(records: &[RunRecord]) -> SourceConsistency {
     {
         return SourceConsistency::Mismatched;
     }
-    let anchors = records
-        .iter()
-        .map(|record| record.source_anchor.as_ref())
-        .collect::<Vec<_>>();
-    if anchors.iter().any(|anchor| anchor.is_none()) {
+    let Some(first_anchor) = first.source_anchor.as_ref() else {
+        return SourceConsistency::NotVerified;
+    };
+    if records.iter().any(|record| record.source_anchor.is_none()) {
         return SourceConsistency::NotVerified;
     }
-    let first_anchor = anchors[0].expect("checked non-empty anchors");
-    if anchors
+    if records
         .iter()
-        .all(|anchor| anchor.is_some_and(|value| value == first_anchor))
+        .all(|record| record.source_anchor.as_ref() == Some(first_anchor))
     {
         return SourceConsistency::Verified;
     }
-    let comparable = anchors.iter().all(|anchor| {
-        anchor
-            .map(|value| value.kind == first_anchor.kind)
-            .unwrap_or(false)
+    let comparable = records.iter().all(|record| {
+        record
+            .source_anchor
+            .as_ref()
+            .is_some_and(|value| value.kind == first_anchor.kind)
     });
     if comparable {
         SourceConsistency::Mismatched
@@ -638,17 +637,23 @@ fn assess_source_consistency(records: &[RunRecord]) -> SourceConsistency {
 }
 
 fn claim_definitions_consistent(rows: &[Row]) -> bool {
-    let mut definitions: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut per_run: BTreeMap<&str, BTreeMap<&str, &str>> = BTreeMap::new();
     for row in rows {
         let Some(digest) = row.claim_definition_digest.as_deref() else {
             return false;
         };
-        definitions
-            .entry(row.claim.as_str())
-            .or_default()
-            .insert(digest);
+        let claims = per_run.entry(row.run.as_str()).or_default();
+        if let Some(previous) = claims.insert(row.claim.as_str(), digest) {
+            if previous != digest {
+                return false;
+            }
+        }
     }
-    !definitions.is_empty() && definitions.values().all(|digests| digests.len() == 1)
+    let mut definitions = per_run.values();
+    let Some(first) = definitions.next() else {
+        return false;
+    };
+    definitions.all(|claims| claims == first)
 }
 
 fn verdict_slug(verdict: Verdict) -> &'static str {
@@ -719,6 +724,19 @@ mod tests {
         }
     }
 
+    fn row(run: &str, claim: &str, digest: &str) -> Row {
+        Row {
+            run: run.into(),
+            claim: claim.into(),
+            level: "required".into(),
+            verdict: Verdict::Verified,
+            reasoning: "fixture".into(),
+            claim_definition_digest: Some(digest.into()),
+            platform: platform("x86_64-unknown-linux-gnu", "cpu", None),
+            rustc: None,
+        }
+    }
+
     #[test]
     fn platform_normalization_is_stable_and_gpu_sensitive() {
         let cpu = platform("X86_64-UNKNOWN-LINUX-GNU", "CPU", None);
@@ -746,5 +764,21 @@ mod tests {
             assess_source_consistency(&[record("a", "abc"), unknown]),
             SourceConsistency::NotVerified
         );
+    }
+
+    #[test]
+    fn claim_consistency_requires_identical_claim_sets_per_run() {
+        assert!(claim_definitions_consistent(&[
+            row("run-a", "foo@same", "sha256:a"),
+            row("run-b", "foo@same", "sha256:a"),
+        ]));
+        assert!(!claim_definitions_consistent(&[
+            row("run-a", "foo@left", "sha256:a"),
+            row("run-b", "foo@right", "sha256:b"),
+        ]));
+        assert!(!claim_definitions_consistent(&[
+            row("run-a", "foo@same", "sha256:a"),
+            row("run-b", "foo@same", "sha256:b"),
+        ]));
     }
 }
