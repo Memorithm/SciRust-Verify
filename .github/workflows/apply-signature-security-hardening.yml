@@ -1,0 +1,69 @@
+name: Validate signature security hardening
+
+on:
+  push:
+    branches: [feat/signed-evidence-dossiers]
+
+permissions:
+  contents: write
+
+jobs:
+  harden-validate-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/signed-evidence-dossiers
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply signature security hardening
+        run: python3 .github/apply_signature_security_hardening.py
+
+      - name: Format
+        run: cargo fmt --all && cargo fmt --all -- --check
+
+      - name: Check
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-targets --locked
+
+      - name: Documentation
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
+      - name: Signature dogfood
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          cargo run -p scirust-verify-cli -- verify . --output "$tmp/.scirust-verify"
+          run_id="$(find "$tmp/.scirust-verify/runs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -1)"
+          cargo run -p scirust-verify-cli -- keygen --private-key "$tmp/private.json" --public-key "$tmp/public.json"
+          cargo run -p scirust-verify-cli -- sign "$run_id" --private-key "$tmp/private.json" --project "$tmp"
+          cargo run -p scirust-verify-cli -- --json verify-signature "$run_id" --public-key "$tmp/public.json" --project "$tmp" > "$tmp/verification.json"
+          python3 - "$tmp/verification.json" <<'PY'
+          import json, sys
+          doc = json.load(open(sys.argv[1]))
+          assert doc["cryptographically_valid"] is True
+          assert "trusted timestamping" in doc["trust_scope"]
+          PY
+          ! grep -q 'secret_key_hex' "$tmp/verification.json"
+
+      - name: Commit validated security hardening
+        run: |
+          set -euo pipefail
+          git config user.name "SciRust Verify V0.2 Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/apply_signature_security_hardening.py .github/workflows/apply-signature-security-hardening.yml
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: bind signature metadata and zeroize key buffers"
+          git push origin HEAD:feat/signed-evidence-dossiers
