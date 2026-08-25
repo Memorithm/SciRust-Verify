@@ -22,18 +22,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Apply signature security hardening
-        run: |
-          python3 .github/apply_signature_security_hardening.py
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("crates/scirust-verify-signature/src/lib.rs")
-          s = p.read_text()
-          old = "secret_key_hex: hex::encode(seed),"
-          new = "secret_key_hex: hex::encode(&seed),"
-          if s.count(old) != 1:
-              raise SystemExit(f"seed encode patch count={s.count(old)}")
-          p.write_text(s.replace(old, new, 1))
-          PY
+        run: python3 .github/apply_signature_security_hardening.py
 
       - name: Refresh lockfile
         run: cargo check --workspace --all-targets
