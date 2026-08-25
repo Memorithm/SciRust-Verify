@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/scirust-verify-model",
+    "crates/scirust-verify-runner",
+    "crates/scirust-verify-numerics",
+    "crates/scirust-verify-store",
+    "crates/scirust-verify-policy",
+    "crates/scirust-verify-core",
+    "crates/scirust-verify-cargo",
+    "crates/scirust-verify-determinism",
+    "crates/scirust-verify-report",
+    "crates/scirust-verify-scirust",
+    "crates/scirust-verify-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license-file = "LICENSE.md"
+repository = "https://github.com/Memorithm/SciRust-Verify"
+authors = ["Tarek Zekriti (https://github.com/CHECKUPAUTO/)"]
+
+[workspace.dependencies]
+scirust-verify-model = { path = "crates/scirust-verify-model" }
+scirust-verify-runner = { path = "crates/scirust-verify-runner" }
+scirust-verify-numerics = { path = "crates/scirust-verify-numerics" }
+scirust-verify-store = { path = "crates/scirust-verify-store" }
+scirust-verify-policy = { path = "crates/scirust-verify-policy" }
+scirust-verify-core = { path = "crates/scirust-verify-core" }
+scirust-verify-cargo = { path = "crates/scirust-verify-cargo" }
+scirust-verify-determinism = { path = "crates/scirust-verify-determinism" }
+scirust-verify-report = { path = "crates/scirust-verify-report" }
+scirust-verify-scirust = { path = "crates/scirust-verify-scirust" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+sha2 = "0.10"
+hex = "0.4"
+clap = { version = "4", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
