@@ -513,7 +513,7 @@ fn is_executable(_p: &Path) -> bool {
     true
 }
 
-/// Helper converting an [`OsString`] path to a lossy string for evidence.
+/// Helper converting a path to a lossy string for evidence.
 pub fn path_display(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }

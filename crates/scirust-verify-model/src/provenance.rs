@@ -43,8 +43,8 @@ impl ProvenanceProbe {
 
 /// Top-level provenance document persisted as `provenance.json`.
 ///
-/// Distinguishes three honest identity states via [`Self::identity_mode`]:
-/// Git identity known, content-only identity known, or unknown.
+/// Distinguishes three honest identity states: Git identity known
+/// (git present), content-only identity known (tree digest), or unknown.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProvenanceDocument {
