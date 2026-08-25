@@ -1,0 +1,51 @@
+name: Apply trust invariant fixes
+
+on:
+  push:
+    branches: [fix/verification-trust-invariants]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/verification-trust-invariants
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply targeted trust-invariant fixes
+        run: python3 .github/apply_trust_invariant_fixes.py
+
+      - name: Format
+        run: cargo fmt --all -- --check || { cargo fmt --all; cargo fmt --all -- --check; }
+
+      - name: Check
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-targets --locked
+
+      - name: Docs
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
+      - name: Commit validated repairs
+        run: |
+          set -euo pipefail
+          git config user.name "SciRust Verify Repair Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/apply_trust_invariant_fixes.py .github/workflows/apply-trust-invariant-fixes.yml
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: enforce verification trust invariants"
+          git push origin HEAD:fix/verification-trust-invariants
