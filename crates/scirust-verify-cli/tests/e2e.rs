@@ -737,6 +737,62 @@ fn copy_dir(src: &Path, dst: &Path) {
     }
 }
 
+#[test]
+fn aggregate_reports_claim_across_runs() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let store = tempfile_dir("aggregate-store");
+    let output_flag = store.join(".scirust-verify");
+    let out_args = ["--output", output_flag.to_str().unwrap()];
+    for _ in 0..2 {
+        let out = cli()
+            .args(["verify", project.to_str().unwrap()])
+            .args(out_args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    let ids = run_ids_in(&store.join(".scirust-verify/runs"));
+    assert!(ids.len() >= 2);
+
+    // All-verified claim across both runs exits 0.
+    let agg = cli()
+        .args(["aggregate", "tests_pass", &ids[0], &ids[1], "--json"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        agg.status.success(),
+        "{}",
+        String::from_utf8_lossy(&agg.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&agg.stdout).unwrap();
+    assert_eq!(
+        doc.get("all_verified").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    // A pattern matching nothing exits 1 (not-found contract).
+    let miss = cli()
+        .args(["aggregate", "no_such_claim", &ids[0], "--json"])
+        .current_dir(&store)
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    assert_eq!(miss.status.code(), Some(1));
+}
+
+fn run_ids_in(runs: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = std::fs::read_dir(runs)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("run-"))
+        .collect();
+    ids.sort();
+    ids
+}
+
 fn evidence_files(run_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let dir = run_dir.join("evidence");

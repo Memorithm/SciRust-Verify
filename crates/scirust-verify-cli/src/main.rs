@@ -116,6 +116,16 @@ enum Command {
     Doctor,
     /// Print the persisted-document schema catalog.
     Schema,
+    /// Report one claim's verdicts across multiple runs (read-only; informational).
+    Aggregate {
+        /// Claim id or substring to match (e.g. `cross_process`).
+        claim: String,
+        /// Run ids to aggregate (at least one).
+        runs: Vec<String>,
+        /// Project root containing `.scirust-verify/runs`.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// Ingest a completed SciRust test-protocol evidence bundle into a new dossier run.
     IngestScirust {
         /// Directory of the protocol bundle containing summary.txt.
@@ -169,6 +179,17 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
         } => report(&run, json, markdown, check_integrity),
         Command::Replay { run, strict } => replay(&run, strict, cli.json),
         Command::Diff { run_a, run_b } => diff(&run_a, &run_b),
+        Command::Aggregate {
+            claim,
+            runs,
+            project,
+        } => {
+            let root = match project {
+                Some(p) => p,
+                None => locate_runs_root()?,
+            };
+            aggregate(&claim, &runs, &root, cli.json)
+        }
         Command::Doctor => doctor(),
         Command::Schema => schema(),
         Command::IngestScirust {
@@ -491,6 +512,23 @@ fn plan(path: PathBuf, profile: Option<String>, json: bool) -> Result<ExitCode, 
             prepared.checks.len(),
             &prepared.plan_digest.value[..16]
         );
+        if !prepared.manifest.verification.targets.is_empty() {
+            println!(
+                "  targets:  {}",
+                prepared.manifest.verification.targets.join(", ")
+            );
+        }
+        if !prepared.manifest.verification.features.is_empty() {
+            println!(
+                "  features: {}",
+                prepared.manifest.verification.features.join(",")
+            );
+        }
+        println!(
+            "  timeout:  {}s per check (default)",
+            prepared.settings.timeout.as_secs()
+        );
+        println!();
         println!("{:<28} {:<10} {:<12} PURPOSE", "CHECK", "PROVIDER", "LEVEL");
         for c in &prepared.checks {
             println!(
@@ -502,10 +540,25 @@ fn plan(path: PathBuf, profile: Option<String>, json: bool) -> Result<ExitCode, 
             println!("  purpose: {}", c.purpose);
             match &c.action {
                 scirust_verify_model::CheckAction::Command { command, .. } => {
-                    println!("  command: {} {}", command.program, command.args.join(" "));
+                    let cwd_note = command
+                        .cwd
+                        .as_ref()
+                        .map(|p| format!(" (cwd: {})", p.display()))
+                        .unwrap_or_default();
+                    println!(
+                        "  command: {} {}{}",
+                        command.program,
+                        command.args.join(" "),
+                        cwd_note
+                    );
                 }
-                scirust_verify_model::CheckAction::Composite { engine, .. } => {
+                scirust_verify_model::CheckAction::Composite { engine, parameters } => {
                     println!("  engine:  {engine}");
+                    let mut keys: Vec<_> = parameters.keys().collect();
+                    keys.sort();
+                    for k in keys {
+                        println!("    {k}: {}", parameters[k].to_string().trim_matches('"'));
+                    }
                 }
             }
         }
@@ -713,6 +766,50 @@ fn diff(run_a: &str, run_b: &str) -> Result<ExitCode, CliError> {
         &Some(da.verdict.clone()),
         &Some(db.verdict.clone()),
     );
+    push_diff_line(&mut lines, "plan_digest", &da.plan_digest, &db.plan_digest);
+
+    // Check-set comparison: added / removed between plans.
+    let removed: Vec<&String> = da
+        .checks
+        .iter()
+        .filter(|c| !db.checks.contains(c))
+        .collect();
+    let added: Vec<&String> = db
+        .checks
+        .iter()
+        .filter(|c| !da.checks.contains(c))
+        .collect();
+    for c in removed {
+        lines.push(format!("removed   check {c}"));
+    }
+    for c in added {
+        lines.push(format!("added     check {c}"));
+    }
+
+    // Limitation drift: coverage differences must be visible in diffs.
+    if da.limitations != db.limitations {
+        let only_a: Vec<&String> = da
+            .limitations
+            .iter()
+            .filter(|l| !db.limitations.contains(l))
+            .collect();
+        let only_b: Vec<&String> = db
+            .limitations
+            .iter()
+            .filter(|l| !da.limitations.contains(l))
+            .collect();
+        for l in only_a {
+            lines.push(format!("removed   limitation: {l}"));
+        }
+        for l in only_b {
+            lines.push(format!("added     limitation: {l}"));
+        }
+    } else if !da.limitations.is_empty() {
+        lines.push(format!(
+            "unchanged limitations: {} item(s)",
+            da.limitations.len()
+        ));
+    }
 
     // Claim-level comparison.
     for claim in da
@@ -754,6 +851,9 @@ struct RunSummary {
     target: Option<String>,
     verdict: String,
     claims: std::collections::BTreeMap<String, String>,
+    plan_digest: Option<String>,
+    checks: Vec<String>,
+    limitations: Vec<String>,
 }
 
 fn run_summary(store: &scirust_verify_store::RunStore) -> Result<RunSummary, String> {
@@ -771,6 +871,24 @@ fn run_summary(store: &scirust_verify_store::RunStore) -> Result<RunSummary, Str
     let evals: serde_json::Value = serde_json::from_str(&eval_text).map_err(|e| e.to_string())?;
     let rep_text = store.read_text("report.json").map_err(|e| e.to_string())?;
     let report: serde_json::Value = serde_json::from_str(&rep_text).map_err(|e| e.to_string())?;
+    let plan_text = store.read_text("plan.json").map_err(|e| e.to_string())?;
+    let plan: serde_json::Value = serde_json::from_str(&plan_text).map_err(|e| e.to_string())?;
+    let checks: Vec<String> = plan
+        .get("checks")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|c| c.get("id").and_then(|i| i.as_str()).map(str::to_owned))
+        .collect();
+    let limitations: Vec<String> = report
+        .get("limitations")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|l| l.as_str().map(str::to_owned))
+        .collect();
 
     let mut claims = std::collections::BTreeMap::new();
     for entry in evals
@@ -811,7 +929,21 @@ fn run_summary(store: &scirust_verify_store::RunStore) -> Result<RunSummary, Str
             .unwrap_or("?")
             .to_owned(),
         claims,
+        plan_digest: loaded_plan_digest(store).ok(),
+        checks,
+        limitations,
     })
+}
+
+fn loaded_plan_digest(store: &scirust_verify_store::RunStore) -> Result<String, String> {
+    let text = store.read_text("plan.json").map_err(|e| e.to_string())?;
+    let plan: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(plan
+        .get("plan_digest")
+        .and_then(|d| d.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_owned())
 }
 
 fn push_diff_line(out: &mut Vec<String>, label: &str, a: &Option<String>, b: &Option<String>) {
@@ -822,6 +954,138 @@ fn push_diff_line(out: &mut Vec<String>, label: &str, a: &Option<String>, b: &Op
         (None, Some(b)) => out.push(format!("added     {label}: now `{b}`")),
         (None, None) => {}
     }
+}
+
+fn aggregate(
+    claim: &str,
+    runs: &[String],
+    project: &Path,
+    json: bool,
+) -> Result<ExitCode, CliError> {
+    if runs.is_empty() {
+        return Err(CliError::usage("aggregate needs at least one run id"));
+    }
+    struct Row {
+        run: String,
+        claim: String,
+        level: String,
+        verdict: String,
+        host_triple: Option<String>,
+        target_triple: Option<String>,
+        rustc: Option<String>,
+    }
+
+    let runs_root = RunsRoot::new(project.join(".scirust-verify").join("runs"));
+    let mut rows = Vec::new();
+    for run_id in runs {
+        let store = runs_root.open(run_id).map_err(|_| {
+            CliError::not_found(format!(
+                "run `{run_id}` not found under {}",
+                runs_root.path().display()
+            ))
+        })?;
+        let eval_text = store
+            .read_text("evaluations.json")
+            .map_err(|e| CliError::not_found(format_missing_eval(run_id, e)))?;
+        let evals: serde_json::Value = serde_json::from_str(&eval_text)
+            .map_err(|e| CliError::usage(format!("run `{run_id}`: {e}")))?;
+        let env_text = store
+            .read_text("environment.json")
+            .map_err(|e| CliError::usage(format!("run `{run_id}`: {e}")))?;
+        let env: serde_json::Value = serde_json::from_str(&env_text).unwrap_or_default();
+
+        for entry in evals
+            .get("evaluations")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            let ev = entry.get("evaluation").cloned().unwrap_or_default();
+            let Some(id) = ev.get("claim_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !id.contains(claim) {
+                continue;
+            }
+            rows.push(Row {
+                run: run_id.clone(),
+                claim: id.to_owned(),
+                level: entry
+                    .get("requirement_level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_owned(),
+                verdict: ev
+                    .get("verdict")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
+                    .to_owned(),
+                host_triple: env
+                    .pointer("/host/triple")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+                target_triple: env
+                    .pointer("/toolchain/target_triple")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+                rustc: env
+                    .pointer("/toolchain/rustc_version")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+            });
+        }
+    }
+
+    if rows.is_empty() {
+        return Err(CliError::not_found(format!(
+            "no claim matching `{claim}` found in the requested runs"
+        )));
+    }
+
+    let all_verified = rows.iter().all(|r| r.verdict == "verified");
+    if json {
+        let doc = serde_json::json!({
+            "claim_pattern": claim,
+            "runs": rows.iter().map(|r| serde_json::json!({
+                "run": r.run,
+                "claim": r.claim,
+                "level": r.level,
+                "verdict": r.verdict,
+                "host_triple": r.host_triple,
+                "target_triple": r.target_triple,
+                "rustc": r.rustc,
+            })).collect::<Vec<_>>(),
+            "all_verified": all_verified,
+            "note": "informational aggregation across dossiers; scope coverage is not certified automatically",
+        });
+        println!("{doc}");
+    } else {
+        println!("claim pattern `{claim}` across {} run(s):", runs.len());
+        for r in &rows {
+            println!(
+                "  {} [{:>13}] {:<40} {:<12} host={} target={}",
+                r.run,
+                r.level,
+                r.claim,
+                r.verdict.to_uppercase(),
+                r.host_triple.as_deref().unwrap_or("?"),
+                r.target_triple.as_deref().unwrap_or("?"),
+            );
+        }
+        println!("all verified: {}", if all_verified { "yes" } else { "no" });
+        println!(
+            "note: informational aggregation across dossiers; scope coverage (distinct platforms/toolchains) is not certified automatically."
+        );
+    }
+    Ok(if all_verified {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
+}
+
+fn format_missing_eval(run_id: &str, e: scirust_verify_store::StoreError) -> String {
+    format!("run `{run_id}` has no evaluations document ({e}); only finalized verify/ingest runs can be aggregated")
 }
 
 fn ingest_scirust(

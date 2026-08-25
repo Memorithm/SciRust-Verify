@@ -74,6 +74,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
   evidence objects themselves, not only to execution records.
 - CLI exit-code contract enforced by type: missing runs exit 1, usage/config
   problems exit 2, infrastructure failures exit 3.
+- SVOP numeric comparisons accept an optional oracle identity field,
+  preserved into stored evidence (§45: record which oracle was used).
+- `scirust-verify aggregate <claim> <runs...>`: read-only multi-dossier
+  claim view with per-run scope columns and explicit non-certification note.
+- `plan` now shows default timeout plus configured targets/features and
+  per-check cwd; composite checks list engine parameters.
+- `diff` compares plan digests, check-set additions/removals and limitation
+  drift between dossiers.
 - E2E coverage additions: init without clobbering, doctor/schema, plan
   listing, verify --json machine output, unicode/space path handling,
   thread-level determinism variation path, protocol ingestion semantics.

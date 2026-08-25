@@ -263,3 +263,45 @@ fn special_values_coerce_from_strings_and_reject_garbage() {
     let err = parse_observations(&line("banana")).unwrap_err();
     assert!(matches!(err, ProtocolError::InvalidPayload { .. }));
 }
+
+#[test]
+fn oracle_identity_is_preserved_end_to_end() {
+    let stdout = format!(
+        "{OBS_MARKER} {{\"kind\":\"numeric_comparison\",\"name\":\"gamma\",\"expected\":1.0,\"observed\":1.0000000001,\"oracle\":\"analytic-gamma-v1\"}}\n"
+    );
+    let obs = parse_observations(&stdout).unwrap();
+    match &obs[0] {
+        ValidObservation::NumericComparison { oracle, .. } => {
+            assert_eq!(oracle.as_deref(), Some("analytic-gamma-v1"));
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+
+    // Oracle identity survives conversion into stored observations.
+    let model_obs = obs[0].to_model_observation();
+    let text = serde_json::to_string(&model_obs).unwrap();
+    assert!(text.contains("analytic-gamma-v1"), "{text}");
+
+    // Absent oracle stays absent; whitespace-only is treated as absent.
+    let bare = parse_observations(&format!(
+        "{OBS_MARKER} {{\"kind\":\"numeric_comparison\",\"name\":\"g\",\"expected\":1.0,\"observed\":1.0,\"oracle\":\"   \"}}\n"
+    ))
+    .unwrap();
+    match &bare[0] {
+        ValidObservation::NumericComparison { oracle, .. } => assert!(oracle.is_none()),
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
+fn nonfinite_model_payloads_roundtrip_without_null() {
+    // NaN serialized into a stored observation must come back as "NaN",
+    // never JSON null (the historical lossy path).
+    let line = format!(
+        "{OBS_MARKER} {{\"kind\":\"numeric_comparison\",\"name\":\"x\",\"expected\":\"NaN\",\"observed\":\"NaN\"}}\n"
+    );
+    let obs = parse_observations(&line).unwrap();
+    let text = serde_json::to_string(&obs[0].to_model_observation().value).unwrap();
+    assert!(text.contains("NaN"), "{text}");
+    assert!(!text.contains("null"), "{text}");
+}

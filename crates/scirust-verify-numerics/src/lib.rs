@@ -182,6 +182,10 @@ pub const OBS_MARKER: &str = "SCIRUST_VERIFY_OBS_V1";
 /// One structured observation emitted by a verified program.
 impl ValidObservation {
     /// Converts into the generic model observation for evidence storage.
+    ///
+    /// Non-finite values are rendered as their canonical SVOP strings so the
+    /// persisted JSON stays valid and losslessly round-trips (raw `f64` NaN
+    /// would serialize as JSON `null`).
     pub fn to_model_observation(&self) -> Observation {
         match self {
             Self::NumericComparison {
@@ -189,14 +193,19 @@ impl ValidObservation {
                 expected,
                 observed,
                 unit,
+                oracle,
             } => {
+                let mut payload = serde_json::json!({
+                    "expected": json_f64(*expected),
+                    "observed": json_f64(*observed),
+                });
+                if let Some(oid) = oracle {
+                    payload["oracle"] = serde_json::Value::String(oid.clone());
+                }
                 let mut o = Observation::new(
                     "numeric_comparison",
                     name.clone(),
-                    ObservedValue::Json(serde_json::json!({
-                        "expected": expected,
-                        "observed": observed,
-                    })),
+                    ObservedValue::Json(payload),
                 );
                 o.unit = unit.clone();
                 o
@@ -296,6 +305,11 @@ pub struct ProtocolObservation {
     /// Optional unit annotation (`m`, `Pa`, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
+    /// Optional oracle identity for comparisons/fingerprints (§oracle model):
+    /// which reference produced the expected value. Recorded so dossiers can
+    /// show *which* oracle was used, never just "an oracle".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle: Option<String>,
     /// For `property`: whether the property held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holds: Option<bool>,
@@ -318,6 +332,8 @@ pub enum ValidObservation {
         observed: f64,
         /// Optional unit.
         unit: Option<String>,
+        /// Oracle identity when declared.
+        oracle: Option<String>,
     },
     /// Canonical output fingerprint; identity evidence.
     Fingerprint {
@@ -388,11 +404,17 @@ impl ProtocolObservation {
                         name: self.name.clone(),
                         reason: "``observed`` is not a number or known special string".into(),
                     })?;
+                let oracle = self
+                    .oracle
+                    .clone()
+                    .map(|o| o.trim().to_owned())
+                    .filter(|o| !o.is_empty());
                 Ok(ValidObservation::NumericComparison {
                     name: self.name.clone(),
                     expected,
                     observed,
                     unit: self.unit.clone(),
+                    oracle,
                 })
             }
             "fingerprint" => {
