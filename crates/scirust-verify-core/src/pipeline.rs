@@ -390,6 +390,9 @@ pub fn run_verify(
     })?;
     store.write_plan(&checks, plan_digest)?;
     store.write_claims(&claims)?;
+    // Persist the effective manifest so `replay` can re-execute faithfully.
+    let _ = serde_json::to_string(&manifest_ref)
+        .map(|json| store.write_text("manifest-used.json", &json));
     store.set_state(RunState::Running)?;
 
     // 6. Execute checks sequentially with a sink bound to the store.
