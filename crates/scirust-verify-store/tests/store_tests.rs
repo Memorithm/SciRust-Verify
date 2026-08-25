@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use scirust_verify_model::{
     Artifact, ArtifactId, ArtifactKind, Check, CheckAction, CheckExecution, CheckId, CheckStatus,
-    Claim, ClaimKind, Evidence, EvidenceKind, RequirementLevel, SourceIdentity, Verdict,
+    Claim, ClaimKind, Evidence, EvidenceKind, RequirementLevel, RunId, SourceIdentity, Verdict,
 };
 use scirust_verify_model::{Attachment, CommandTemplate, Digest, EvidenceId};
 use scirust_verify_store::{generate_run_id, RunState, RunsRoot, StoreError};
@@ -18,6 +18,42 @@ fn tmp_root(tag: &str) -> std::path::PathBuf {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+#[test]
+fn run_ids_are_portable_single_path_components() {
+    let root = tmp_root("run-id-safety");
+    let runs = RunsRoot::new(root.join("runs"));
+    for bad in [
+        "",
+        ".",
+        "..",
+        "../escape",
+        "..\\escape",
+        "/absolute",
+        "run/child",
+        "run\\child",
+        "run:drive",
+        "white space",
+    ] {
+        assert!(
+            matches!(runs.open(bad), Err(StoreError::InvalidRunId(_))),
+            "{bad:?}"
+        );
+        assert!(
+            matches!(
+                runs.create_run_with_id(RunId::from_string(bad)),
+                Err(StoreError::InvalidRunId(_))
+            ),
+            "{bad:?}"
+        );
+    }
+
+    let good = RunId::from_string("run-20260825T184500Z-deadbeef");
+    let store = runs.create_run_with_id(good.clone()).unwrap();
+    assert_eq!(store.run_id(), &good);
+    assert!(runs.open(good.as_str()).is_ok());
+    let _ = std::fs::remove_dir_all(root);
 }
 
 fn sample_artifact() -> Artifact {

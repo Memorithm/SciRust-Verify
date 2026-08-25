@@ -808,6 +808,178 @@ fn evidence_files(run_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+#[test]
+fn signed_dossier_roundtrip_and_wrong_key_rejection() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let store = tempfile_dir("signature-roundtrip");
+    let output = store.join(".scirust-verify");
+    let verify = cli()
+        .args([
+            "verify",
+            project.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .env("CARGO_TARGET_DIR", project.join("target"))
+        .output()
+        .unwrap();
+    assert!(
+        verify.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let run = latest_run_in(&output.join("runs"));
+
+    let keys = store.join("keys");
+    std::fs::create_dir_all(&keys).unwrap();
+    let private_a = keys.join("a.json");
+    let public_a = keys.join("a.pub.json");
+    let private_b = keys.join("b.json");
+    let public_b = keys.join("b.pub.json");
+    let keygen = cli()
+        .args([
+            "keygen",
+            "--private-key",
+            private_a.to_str().unwrap(),
+            "--public-key",
+            public_a.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        keygen.status.success(),
+        "{}",
+        String::from_utf8_lossy(&keygen.stderr)
+    );
+    let secret_doc = std::fs::read_to_string(&private_a).unwrap();
+    let secret_hex = serde_json::from_str::<serde_json::Value>(&secret_doc).unwrap()
+        ["secret_key_hex"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!String::from_utf8_lossy(&keygen.stdout).contains(&secret_hex));
+
+    let signed = cli()
+        .args([
+            "sign",
+            &run,
+            "--private-key",
+            private_a.to_str().unwrap(),
+            "--project",
+            store.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        signed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&signed.stderr)
+    );
+
+    let checked = cli()
+        .args([
+            "--json",
+            "verify-signature",
+            &run,
+            "--public-key",
+            public_a.to_str().unwrap(),
+            "--project",
+            store.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
+    assert_eq!(doc["cryptographically_valid"].as_bool(), Some(true));
+    assert!(doc["trust_scope"]
+        .as_str()
+        .unwrap()
+        .contains("signer identity"));
+
+    assert!(cli()
+        .args([
+            "keygen",
+            "--private-key",
+            private_b.to_str().unwrap(),
+            "--public-key",
+            public_b.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let wrong = cli()
+        .args([
+            "verify-signature",
+            &run,
+            "--public-key",
+            public_b.to_str().unwrap(),
+            "--project",
+            store.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(wrong.status.code(), Some(1));
+}
+
+#[test]
+fn corrupted_dossier_cannot_be_signed() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let store = tempfile_dir("signature-corrupt");
+    let output = store.join(".scirust-verify");
+    let verify = cli()
+        .args([
+            "verify",
+            project.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .env("CARGO_TARGET_DIR", project.join("target"))
+        .output()
+        .unwrap();
+    assert!(verify.status.success());
+    let run = latest_run_in(&output.join("runs"));
+    std::fs::write(
+        output.join("runs").join(&run).join("report.md"),
+        "tampered\n",
+    )
+    .unwrap();
+
+    let private = store.join("private.json");
+    let public = store.join("public.json");
+    assert!(cli()
+        .args([
+            "keygen",
+            "--private-key",
+            private.to_str().unwrap(),
+            "--public-key",
+            public.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let sign = cli()
+        .args([
+            "sign",
+            &run,
+            "--private-key",
+            private.to_str().unwrap(),
+            "--project",
+            store.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(sign.status.code(), Some(1));
+    assert!(!store.join(".scirust-verify/signatures").exists());
+}
+
 fn tempfile_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "sve-{tag}-{}-{}",
