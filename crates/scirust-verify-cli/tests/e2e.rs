@@ -215,11 +215,23 @@ fn numeric_pass_and_fail_paths() {
     assert!(stdout.contains("FAILED"), "{stdout}");
 
     // The verifier caught divergence although the program exited 0:
-    // numeric re-evaluation independence is the whole point.
+    // numeric re-evaluation independence is the whole point. NaN against a
+    // finite oracle must also fail — never an accidental pass.
     let project = fixture("numeric-fail");
     let run_dir = project.join(format!(".scirust-verify/runs/{}", latest_run(&project)));
     let execs = std::fs::read_to_string(run_dir.join("executions.json")).unwrap();
     assert!(execs.contains("\"outcome\": \"failed\""), "{execs}");
+    let mut saw_nan_observation = false;
+    for entry in evidence_files(&run_dir) {
+        let text = std::fs::read_to_string(entry).unwrap();
+        if text.contains("nan_oracle") && text.contains("numeric_comparison") {
+            saw_nan_observation = true;
+        }
+    }
+    assert!(
+        saw_nan_observation,
+        "NaN observation must be captured as evidence"
+    );
 }
 
 #[test]

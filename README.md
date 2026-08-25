@@ -96,7 +96,10 @@ scirust-verify diff <run-a> <run-b>
 # 8. Probe the environment.
 scirust-verify doctor
 
-# 9. Persisted document catalog.
+# 9. Ingest a completed SciRust test-protocol bundle into a dossier.
+scirust-verify ingest-scirust /path/to/protocol-run --project .
+
+# 10. Persisted document catalog.
 scirust-verify schema
 ```
 

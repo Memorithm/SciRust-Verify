@@ -66,6 +66,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
   gates link to typed claims while unknown gates become custom claims.
 - Store hardening: duplicate evidence-id writes rejected; self-referencing
   `derived_from` links rejected at finalization.
+- SVOP v1 special-value transport: JSON cannot express NaN/infinities, so
+  numeric comparisons accept the exact strings `"NaN"`, `"inf"`, `"-inf"`
+  and coerce them during validation; non-finite values render canonically in
+  stored observations so persisted JSON always round-trips.
+- Structured (SVOP) observations are now attached to command-execution
+  evidence objects themselves, not only to execution records.
 - CLI exit-code contract enforced by type: missing runs exit 1, usage/config
   problems exit 2, infrastructure failures exit 3.
 - E2E coverage additions: init without clobbering, doctor/schema, plan

@@ -219,3 +219,47 @@ fn numeric_comparison_verdict_flow() {
         .collect();
     assert_eq!(verdicts, vec![true]);
 }
+
+#[test]
+fn special_values_coerce_from_strings_and_reject_garbage() {
+    use scirust_verify_model::tolerance::Tolerance;
+    let line = |observed: &str| {
+        format!(
+            "{OBS_MARKER} {{\"kind\":\"numeric_comparison\",\"name\":\"n\",\"expected\":1.0,\"observed\":\"{observed}\"}}\n"
+        )
+    };
+    // NaN against a finite oracle fails even with absurd tolerance.
+    let t = tol_abs(1e9);
+    for bad in ["NaN", "inf", "-inf"] {
+        let obs = parse_observations(&line(bad)).unwrap();
+        match &obs[0] {
+            ValidObservation::NumericComparison {
+                expected, observed, ..
+            } => {
+                assert_eq!(*expected, 1.0);
+                assert!(
+                    !compare(*expected, *observed, &t).pass,
+                    "{bad} must not pass"
+                );
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+    // NaN == NaN passes only as explicit match.
+    let nan_line = format!(
+        "{OBS_MARKER} {{\"kind\":\"numeric_comparison\",\"name\":\"n\",\"expected\":\"NaN\",\"observed\":\"NaN\"}}\n"
+    );
+    let obs = parse_observations(&nan_line).unwrap();
+    match &obs[0] {
+        ValidObservation::NumericComparison {
+            expected, observed, ..
+        } => {
+            assert!(compare(*expected, *observed, &Tolerance::exact()).pass);
+            assert!(expected.is_nan() && observed.is_nan());
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+    // Garbage strings are validation errors, not silent zeros.
+    let err = parse_observations(&line("banana")).unwrap_err();
+    assert!(matches!(err, ProtocolError::InvalidPayload { .. }));
+}
