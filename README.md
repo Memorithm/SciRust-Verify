@@ -101,6 +101,11 @@ scirust-verify ingest-scirust /path/to/protocol-run --project .
 
 # 10. Persisted document catalog.
 scirust-verify schema
+
+# 11. Generate an Ed25519 keypair, sign a finalized dossier, and verify it.
+scirust-verify keygen --private-key ~/.config/scirust-verify/key.json --public-key ~/.config/scirust-verify/key.pub.json
+scirust-verify sign <run-id> --private-key ~/.config/scirust-verify/key.json
+scirust-verify verify-signature <run-id> --public-key ~/.config/scirust-verify/key.pub.json
 ```
 
 Exit codes: `0` pass/pass-with-gaps · `1` verification not established or
@@ -153,6 +158,16 @@ linkage, aggregation, integrity, scope and reporting. The adapter crate
 (`scirust-verify-scirust`) ingests completed SciRust protocol evidence
 bundles without re-implementing or flattening their semantics — `PASS`,
 `PASS (with gaps)` and `FAIL` stay distinct.
+
+## Signed evidence dossiers
+
+Finalized dossiers can be authenticated with detached Ed25519 signatures. The
+signature binds the exact `bundle.json` bytes and run id without mutating the
+sealed evidence directory. Signature files live under
+`.scirust-verify/signatures/<run-id>/`. A successful signature check proves
+validity under the **explicitly supplied public key**; it does not by itself
+prove signer identity, key authorization/revocation, or trusted timestamping.
+See [SIGNATURES.md](docs/SIGNATURES.md).
 
 ## Development
 

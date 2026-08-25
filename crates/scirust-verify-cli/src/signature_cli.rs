@@ -57,14 +57,8 @@ pub(crate) fn sign(
     })?;
     let bundle = store.path().join("bundle.json");
     let signatures_root = root.join(".scirust-verify/signatures");
-    let (signature, path) = sign_bundle(
-        run,
-        &bundle,
-        &private_key,
-        &signatures_root,
-        force,
-    )
-    .map_err(|e| map_signature_error(e, false))?;
+    let (signature, path) = sign_bundle(run, &bundle, &private_key, &signatures_root, force)
+        .map_err(|e| map_signature_error(e, false))?;
 
     if json {
         println!(

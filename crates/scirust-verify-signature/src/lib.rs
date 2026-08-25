@@ -204,12 +204,11 @@ pub fn generate_keypair(
 /// Load and validate a public-key document.
 pub fn read_public_key(path: &Path) -> Result<PublicKeyDocument, SignatureError> {
     let bytes = fs::read(path).map_err(|e| SignatureError::io(path, e))?;
-    let doc: PublicKeyDocument = serde_json::from_slice(&bytes).map_err(|e| {
-        SignatureError::Json {
+    let doc: PublicKeyDocument =
+        serde_json::from_slice(&bytes).map_err(|e| SignatureError::Json {
             path: path.to_path_buf(),
             source: e,
-        }
-    })?;
+        })?;
     validate_public_document(&doc)?;
     Ok(doc)
 }
@@ -270,14 +269,13 @@ pub fn verify_bundle_signature(
     public_key_path: &Path,
 ) -> Result<SignatureVerification, SignatureError> {
     let bundle = fs::read(bundle_path).map_err(|e| SignatureError::io(bundle_path, e))?;
-    let signature_bytes = fs::read(signature_path)
-        .map_err(|e| SignatureError::io(signature_path, e))?;
-    let doc: SignatureDocument = serde_json::from_slice(&signature_bytes).map_err(|e| {
-        SignatureError::Json {
+    let signature_bytes =
+        fs::read(signature_path).map_err(|e| SignatureError::io(signature_path, e))?;
+    let doc: SignatureDocument =
+        serde_json::from_slice(&signature_bytes).map_err(|e| SignatureError::Json {
             path: signature_path.to_path_buf(),
             source: e,
-        }
-    })?;
+        })?;
     validate_signature_document(&doc)?;
     if doc.run_id != run_id {
         return Err(SignatureError::InvalidSignatureDocument(format!(
@@ -321,12 +319,11 @@ pub fn verify_bundle_signature(
 
 fn read_private_key(path: &Path) -> Result<SigningKey, SignatureError> {
     let bytes = fs::read(path).map_err(|e| SignatureError::io(path, e))?;
-    let doc: PrivateKeyDocument = serde_json::from_slice(&bytes).map_err(|e| {
-        SignatureError::Json {
+    let doc: PrivateKeyDocument =
+        serde_json::from_slice(&bytes).map_err(|e| SignatureError::Json {
             path: path.to_path_buf(),
             source: e,
-        }
-    })?;
+        })?;
     if doc.schema_version > SCHEMA_VERSION || doc.algorithm != ALGORITHM {
         return Err(SignatureError::InvalidKey(
             "unsupported private-key schema or algorithm".to_owned(),
@@ -394,9 +391,7 @@ fn validate_signature_document(doc: &SignatureDocument) -> Result<(), SignatureE
     };
     validate_public_document(&public)?;
     let _ = decode_signature(&doc.signature_hex)?;
-    if doc.bundle_sha256.len() != 64
-        || !doc.bundle_sha256.bytes().all(|b| b.is_ascii_hexdigit())
-    {
+    if doc.bundle_sha256.len() != 64 || !doc.bundle_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(SignatureError::InvalidSignatureDocument(
             "bundle_sha256 must be 32-byte hexadecimal".to_owned(),
         ));
@@ -418,9 +413,9 @@ fn decode_signature(value: &str) -> Result<Signature, SignatureError> {
 fn decode_fixed<const N: usize>(value: &str, what: &str) -> Result<[u8; N], SignatureError> {
     let bytes = hex::decode(value)
         .map_err(|_| SignatureError::InvalidKey(format!("{what} is not valid hexadecimal")))?;
-    bytes.try_into().map_err(|_| {
-        SignatureError::InvalidKey(format!("{what} must contain exactly {N} bytes"))
-    })
+    bytes
+        .try_into()
+        .map_err(|_| SignatureError::InvalidKey(format!("{what} must contain exactly {N} bytes")))
 }
 
 fn signature_message(run_id: &str, bundle: &[u8]) -> Vec<u8> {
@@ -595,14 +590,8 @@ mod tests {
         let bundle = dir.join("bundle.json");
         fs::write(&bundle, b"{}\n").unwrap();
         generate_keypair(&private, &public, false).unwrap();
-        let (_, path) = sign_bundle(
-            "run-a",
-            &bundle,
-            &private,
-            &dir.join("signatures"),
-            false,
-        )
-        .unwrap();
+        let (_, path) =
+            sign_bundle("run-a", &bundle, &private, &dir.join("signatures"), false).unwrap();
         assert!(verify_bundle_signature("run-b", &bundle, &path, &public).is_err());
         let _ = fs::remove_dir_all(dir);
     }
