@@ -92,6 +92,14 @@ dependency graph, external attestation, ...), producer, subject artifact,
 scope snapshot, UTC instant, producer status, observations, input/output
 digests, attachments, `derived_from` links, and structured metadata.
 
+### Structured observation payloads
+
+SVOP `numeric_comparison` observations may declare an optional `oracle`
+identity string (e.g. `"oracle":"analytic-gamma-v1"`). It is preserved in the
+stored observation payload so dossiers show *which* reference produced each
+expected value. Non-finite expected/observed values are stored as their
+canonical strings (`"NaN"`, `"inf"`, `"-inf"`) — never JSON `null`.
+
 ### Attachments
 
 Referenced by relative path inside the run directory (never absolute, never

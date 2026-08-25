@@ -182,6 +182,10 @@ pub const OBS_MARKER: &str = "SCIRUST_VERIFY_OBS_V1";
 /// One structured observation emitted by a verified program.
 impl ValidObservation {
     /// Converts into the generic model observation for evidence storage.
+    ///
+    /// Non-finite values are rendered as their canonical SVOP strings so the
+    /// persisted JSON stays valid and losslessly round-trips (raw `f64` NaN
+    /// would serialize as JSON `null`).
     pub fn to_model_observation(&self) -> Observation {
         match self {
             Self::NumericComparison {
@@ -189,14 +193,19 @@ impl ValidObservation {
                 expected,
                 observed,
                 unit,
+                oracle,
             } => {
+                let mut payload = serde_json::json!({
+                    "expected": json_f64(*expected),
+                    "observed": json_f64(*observed),
+                });
+                if let Some(oid) = oracle {
+                    payload["oracle"] = serde_json::Value::String(oid.clone());
+                }
                 let mut o = Observation::new(
                     "numeric_comparison",
                     name.clone(),
-                    ObservedValue::Json(serde_json::json!({
-                        "expected": expected,
-                        "observed": observed,
-                    })),
+                    ObservedValue::Json(payload),
                 );
                 o.unit = unit.clone();
                 o
@@ -223,6 +232,49 @@ impl ValidObservation {
     }
 }
 
+/// A JSON number or string-encoded IEEE-754 special value.
+///
+/// Standard JSON cannot express NaN or infinities; SVOP v1 therefore accepts
+/// them as the exact strings `"NaN"`, `"inf"`, `"+inf"` and `"-inf"`. Any
+/// other payload (string, bool, object, ...) fails validation instead of
+/// being silently coerced.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SpecialValue {
+    /// A plain JSON number.
+    Number(f64),
+    /// A string-encoded special value (`NaN`, `inf`, `+inf`, `-inf`).
+    Text(String),
+}
+
+/// Canonical JSON rendering for possibly-non-finite f64 values.
+pub fn json_f64(value: f64) -> serde_json::Value {
+    if value.is_nan() {
+        serde_json::Value::String("NaN".to_owned())
+    } else if value == f64::INFINITY {
+        serde_json::Value::String("inf".to_owned())
+    } else if value == f64::NEG_INFINITY {
+        serde_json::Value::String("-inf".to_owned())
+    } else {
+        serde_json::Value::from(value)
+    }
+}
+
+impl SpecialValue {
+    /// Converts to f64, returning `None` for non-numeric payloads.
+    pub fn to_f64(&self) -> Option<f64> {
+        match self {
+            Self::Number(n) => Some(*n),
+            Self::Text(s) => match s.as_str() {
+                "NaN" => Some(f64::NAN),
+                "inf" | "+inf" => Some(f64::INFINITY),
+                "-inf" => Some(f64::NEG_INFINITY),
+                _ => None,
+            },
+        }
+    }
+}
+
 /// One raw structured observation line payload, as emitted by verified
 /// programs. Fields are optional because the wire format is flat; validity
 /// is enforced per-kind by [`ProtocolObservation::validate`].
@@ -234,11 +286,16 @@ pub struct ProtocolObservation {
     /// Stable name of the observation.
     pub name: String,
     /// For `numeric_comparison`: expected value from the oracle/reference.
+    ///
+    /// JSON has no NaN/infinity literals, so special values are transported
+    /// as strings (`"NaN"`, `"inf"`, `"-inf"`) and coerced during
+    /// validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected: Option<f64>,
-    /// For `numeric_comparison`: value produced by the run.
+    pub expected: Option<SpecialValue>,
+    /// For `numeric_comparison`: value produced by the run (same coercion
+    /// rules as `expected`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed: Option<f64>,
+    pub observed: Option<SpecialValue>,
     /// For `metric`: measured value as JSON number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
@@ -248,6 +305,11 @@ pub struct ProtocolObservation {
     /// Optional unit annotation (`m`, `Pa`, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
+    /// Optional oracle identity for comparisons/fingerprints (§oracle model):
+    /// which reference produced the expected value. Recorded so dossiers can
+    /// show *which* oracle was used, never just "an oracle".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle: Option<String>,
     /// For `property`: whether the property held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holds: Option<bool>,
@@ -270,6 +332,8 @@ pub enum ValidObservation {
         observed: f64,
         /// Optional unit.
         unit: Option<String>,
+        /// Oracle identity when declared.
+        oracle: Option<String>,
     },
     /// Canonical output fingerprint; identity evidence.
     Fingerprint {
@@ -314,19 +378,43 @@ impl ProtocolObservation {
         match self.kind.as_str() {
             "numeric_comparison" => {
                 non_empty(&self.name, "name")?;
-                let expected = self.expected.ok_or_else(|| ProtocolError::InvalidPayload {
-                    name: self.name.clone(),
-                    reason: "missing `expected`".into(),
-                })?;
-                let observed = self.observed.ok_or_else(|| ProtocolError::InvalidPayload {
-                    name: self.name.clone(),
-                    reason: "missing `observed`".into(),
-                })?;
+                let expected =
+                    self.expected
+                        .as_ref()
+                        .ok_or_else(|| ProtocolError::InvalidPayload {
+                            name: self.name.clone(),
+                            reason: "missing `expected`".into(),
+                        })?;
+                let observed =
+                    self.observed
+                        .as_ref()
+                        .ok_or_else(|| ProtocolError::InvalidPayload {
+                            name: self.name.clone(),
+                            reason: "missing `observed`".into(),
+                        })?;
+                let expected = expected
+                    .to_f64()
+                    .ok_or_else(|| ProtocolError::InvalidPayload {
+                        name: self.name.clone(),
+                        reason: "`expected` is not a number or known special string".into(),
+                    })?;
+                let observed = observed
+                    .to_f64()
+                    .ok_or_else(|| ProtocolError::InvalidPayload {
+                        name: self.name.clone(),
+                        reason: "``observed`` is not a number or known special string".into(),
+                    })?;
+                let oracle = self
+                    .oracle
+                    .clone()
+                    .map(|o| o.trim().to_owned())
+                    .filter(|o| !o.is_empty());
                 Ok(ValidObservation::NumericComparison {
                     name: self.name.clone(),
                     expected,
                     observed,
                     unit: self.unit.clone(),
+                    oracle,
                 })
             }
             "fingerprint" => {

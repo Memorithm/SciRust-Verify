@@ -19,6 +19,7 @@ scirust-verify-store = { workspace = true }
 scirust-verify-core = { workspace = true }
 scirust-verify-cargo = { workspace = true }
 scirust-verify-determinism = { workspace = true }
+scirust-verify-scirust = { workspace = true }
 scirust-verify-report = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }

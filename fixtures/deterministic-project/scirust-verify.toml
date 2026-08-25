@@ -19,9 +19,13 @@ deny = "off"
 
 [determinism]
 enabled = true
-runs = 3
+runs = 2
 program = ["cargo", "run", "--quiet", "--bin", "det-app"]
 mode = "structured"
+# Exercise the thread-variation path: the engine sets SCI_THREADS per level
+# and includes those runs in the fingerprint comparison.
+thread_levels = [1, 4]
+thread_env = "SCI_THREADS"
 
 [claims]
 cross_process_deterministic = "required"

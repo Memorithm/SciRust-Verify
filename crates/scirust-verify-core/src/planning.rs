@@ -176,12 +176,27 @@ pub fn execute_command_check(
     payloads.insert(stdout_path.clone(), record.stdout.data.clone());
     payloads.insert(stderr_path.clone(), record.stderr.data.clone());
 
+    // Structured observations (SVOP) are evidence, not decoration.
+    // Numeric checks require at least one valid numeric comparison and must
+    // never turn parse failures, missing observations or truncated stdout
+    // into a successful claim. Parsed facts are attached to the evidence
+    // object itself, not just to the execution record.
+    let svop_result = scirust_verify_numerics::parse_observations(&record.stdout_lossy());
+    let svop = svop_result.as_ref().ok();
+    let svop_observations: Vec<Observation> = svop
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .map(|o| o.to_model_observation())
+        .collect();
+
     let ev_id = env.sink.next_id();
     let evidence = scirust_verify_model::Evidence::builder(
         ev_id.clone(),
         EvidenceKind::CommandExecution,
         producer,
     )
+    .observations(svop_observations.iter().cloned())
     .artifact(env.artifact.clone())
     .scope(env.scope.clone())
     .status(if record.timed_out() {
@@ -240,19 +255,6 @@ pub fn execute_command_check(
     .build();
     env.sink.add_evidence(evidence, &payloads)?;
 
-    // Structured observations (SVOP) are evidence, not decoration.
-    // Numeric checks require at least one valid numeric comparison and must
-    // never turn parse failures, missing observations or truncated stdout
-    // into a successful claim.
-    let svop_result = scirust_verify_numerics::parse_observations(&record.stdout_lossy());
-    let svop = svop_result.as_ref().ok();
-    let mut observations: Vec<Observation> = svop
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-        .iter()
-        .map(|o| o.to_model_observation())
-        .collect();
-
     let mut structured_evidence_problem = None;
     if producer == "numeric-provider" {
         if record.stdout.truncated {
@@ -283,6 +285,7 @@ pub fn execute_command_check(
         }
     }
 
+    let mut observations: Vec<Observation> = svop_observations.clone();
     // Numeric re-evaluation against the scope tolerance — SciRust-Verify
     // never trusts the program's own comparison verdict.
     let tolerance = env.scope.tolerance.unwrap_or_default();
@@ -302,11 +305,19 @@ pub fn execute_command_check(
                     name,
                     ObservedValue::Bool(cmp.pass),
                 ));
-                observations.push(Observation::new(
-                    "max_abs_error",
-                    name,
-                    ObservedValue::Float(cmp.abs_error.unwrap_or(f64::NAN)),
-                ));
+                // Non-finite errors (NaN pairs, mixed infinities) render as
+                // canonical strings so persisted JSON stays round-trippable.
+                let abs_error_value = match cmp.abs_error {
+                    Some(err) if err.is_finite() => ObservedValue::Float(err),
+                    Some(err) => ObservedValue::Text(
+                        scirust_verify_numerics::json_f64(err)
+                            .as_str()
+                            .unwrap_or("NaN")
+                            .to_owned(),
+                    ),
+                    None => ObservedValue::Text("undefined".to_owned()),
+                };
+                observations.push(Observation::new("max_abs_error", name, abs_error_value));
                 if !cmp.pass {
                     numeric_fail = true;
                 }

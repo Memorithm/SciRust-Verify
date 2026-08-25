@@ -215,11 +215,23 @@ fn numeric_pass_and_fail_paths() {
     assert!(stdout.contains("FAILED"), "{stdout}");
 
     // The verifier caught divergence although the program exited 0:
-    // numeric re-evaluation independence is the whole point.
+    // numeric re-evaluation independence is the whole point. NaN against a
+    // finite oracle must also fail — never an accidental pass.
     let project = fixture("numeric-fail");
     let run_dir = project.join(format!(".scirust-verify/runs/{}", latest_run(&project)));
     let execs = std::fs::read_to_string(run_dir.join("executions.json")).unwrap();
     assert!(execs.contains("\"outcome\": \"failed\""), "{execs}");
+    let mut saw_nan_observation = false;
+    for entry in evidence_files(&run_dir) {
+        let text = std::fs::read_to_string(entry).unwrap();
+        if text.contains("nan_oracle") && text.contains("numeric_comparison") {
+            saw_nan_observation = true;
+        }
+    }
+    assert!(
+        saw_nan_observation,
+        "NaN observation must be captured as evidence"
+    );
 }
 
 #[test]
@@ -368,6 +380,91 @@ fn replay_creates_new_linked_run_and_diff_compares() {
             .unwrap();
         assert!(d.status.success(), "{}", String::from_utf8_lossy(&d.stderr));
     }
+}
+
+#[test]
+fn verify_json_emits_parseable_machine_output() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let out = cli()
+        .args(["verify", project.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("verify --json must emit valid JSON");
+    assert_eq!(
+        doc.get("overall_verdict").and_then(|v| v.as_str()),
+        Some("PASS")
+    );
+    assert!(doc
+        .get("run_id")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .starts_with("run-"));
+}
+
+#[test]
+fn scirust_protocol_ingestion_preserves_semantics() {
+    // Synthetic protocol bundle exercising all three source statuses.
+    let bundle = tempfile_dir("scirust-protocol-bundle");
+    std::fs::write(
+        bundle.join("summary.txt"),
+        "commit=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\nbranch=master\ntimestamp=2026-08-25T00:00:00Z\npackages=90\ngate.fmt=PASS (required, 3s)\ngate.build=PASS (required, 100s)\ngate.test=FAIL (required, 200s -- 2 oracles diverged)\ngate.aarch64=SKIP (required, 0s)\ngate.gpu=SKIP (optional, 0s)\nverdict=FAIL\n",
+    )
+    .unwrap();
+
+    let store = tempfile_dir("ingest-store");
+    let out = cli()
+        .args([
+            "ingest-scirust",
+            bundle.to_str().unwrap(),
+            "--output",
+            store.to_str().unwrap(),
+            "--json",
+        ])
+        .current_dir(&store)
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    // A FAIL protocol must not exit 0.
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON on stdout");
+    assert_eq!(
+        doc.get("overall_verdict").and_then(|v| v.as_str()),
+        Some("FAIL")
+    );
+
+    // Inspect the dossier: original summary attached verbatim; SKIP stays SKIPPED.
+    let run_id = doc.get("run_id").and_then(|v| v.as_str()).unwrap();
+    let run_dir = store.join(format!(".scirust-verify/runs/{run_id}"));
+    let summary_attached =
+        std::fs::read_to_string(run_dir.join("logs/scirust-summary.txt")).unwrap();
+    assert!(summary_attached.contains("verdict=FAIL"));
+
+    let evals = std::fs::read_to_string(run_dir.join("evaluations.json")).unwrap();
+    assert!(
+        evals.contains("tests_pass@test"),
+        "gate-linked claim id expected: {evals}"
+    );
+    assert!(evals.contains("\"failed\""), "{evals}");
+
+    // Integrity of an ingested bundle holds.
+    let integrity = cli()
+        .args(["report", run_id, "--check-integrity"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        integrity.status.success(),
+        "{}",
+        String::from_utf8_lossy(&integrity.stderr)
+    );
 }
 
 #[test]
@@ -638,6 +735,62 @@ fn copy_dir(src: &Path, dst: &Path) {
             std::fs::copy(&from, &to).unwrap();
         }
     }
+}
+
+#[test]
+fn aggregate_reports_claim_across_runs() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let store = tempfile_dir("aggregate-store");
+    let output_flag = store.join(".scirust-verify");
+    let out_args = ["--output", output_flag.to_str().unwrap()];
+    for _ in 0..2 {
+        let out = cli()
+            .args(["verify", project.to_str().unwrap()])
+            .args(out_args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    let ids = run_ids_in(&store.join(".scirust-verify/runs"));
+    assert!(ids.len() >= 2);
+
+    // All-verified claim across both runs exits 0.
+    let agg = cli()
+        .args(["aggregate", "tests_pass", &ids[0], &ids[1], "--json"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        agg.status.success(),
+        "{}",
+        String::from_utf8_lossy(&agg.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&agg.stdout).unwrap();
+    assert_eq!(
+        doc.get("all_verified").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    // A pattern matching nothing exits 1 (not-found contract).
+    let miss = cli()
+        .args(["aggregate", "no_such_claim", &ids[0], "--json"])
+        .current_dir(&store)
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    assert_eq!(miss.status.code(), Some(1));
+}
+
+fn run_ids_in(runs: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = std::fs::read_dir(runs)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("run-"))
+        .collect();
+    ids.sort();
+    ids
 }
 
 fn evidence_files(run_dir: &Path) -> Vec<PathBuf> {
