@@ -54,6 +54,18 @@ fn timeout_kills_process_and_is_distinct() {
     assert!(rec.duration_ns < Duration::from_secs(5).as_nanos() as u64);
 }
 
+#[cfg(unix)]
+#[test]
+fn timeout_kills_descendants_holding_capture_pipes() {
+    let cwd = tmpdir("timeout-descendants");
+    let spec = CommandSpec::new("sh", &cwd)
+        .args(["-c", "sleep 30 & wait"])
+        .timeout(Duration::from_millis(150));
+    let rec = execute(&spec).unwrap();
+    assert_eq!(rec.status, ExitStatus::TimedOut);
+    assert!(rec.duration_ns < Duration::from_secs(5).as_nanos() as u64);
+}
+
 #[test]
 fn large_stdout_is_bounded_and_flagged() {
     let cwd = tmpdir("large");

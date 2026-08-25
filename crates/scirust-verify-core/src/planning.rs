@@ -240,21 +240,54 @@ pub fn execute_command_check(
     .build();
     env.sink.add_evidence(evidence, &payloads)?;
 
-    // Structured observations (SVOP) parsed independently of exit status.
-    let svop: Option<Vec<_>> =
-        scirust_verify_numerics::parse_observations(&record.stdout_lossy()).ok();
+    // Structured observations (SVOP) are evidence, not decoration.
+    // Numeric checks require at least one valid numeric comparison and must
+    // never turn parse failures, missing observations or truncated stdout
+    // into a successful claim.
+    let svop_result = scirust_verify_numerics::parse_observations(&record.stdout_lossy());
+    let svop = svop_result.as_ref().ok();
     let mut observations: Vec<Observation> = svop
-        .as_deref()
+        .map(Vec::as_slice)
         .unwrap_or(&[])
         .iter()
         .map(|o| o.to_model_observation())
         .collect();
 
+    let mut structured_evidence_problem = None;
+    if producer == "numeric-provider" {
+        if record.stdout.truncated {
+            structured_evidence_problem = Some(
+                "numeric stdout was truncated; complete structured evidence was not captured"
+                    .to_owned(),
+            );
+        } else {
+            match &svop_result {
+                Err(err) => {
+                    structured_evidence_problem =
+                        Some(format!("invalid structured numeric evidence: {err}"));
+                }
+                Ok(obs)
+                    if !obs.iter().any(|o| {
+                        matches!(
+                            o,
+                            scirust_verify_numerics::ValidObservation::NumericComparison { .. }
+                        )
+                    }) =>
+                {
+                    structured_evidence_problem = Some(
+                        "numeric check emitted no valid numeric_comparison observation".to_owned(),
+                    );
+                }
+                Ok(_) => {}
+            }
+        }
+    }
+
     // Numeric re-evaluation against the scope tolerance — SciRust-Verify
     // never trusts the program's own comparison verdict.
     let tolerance = env.scope.tolerance.unwrap_or_default();
     let mut numeric_fail = false;
-    if let Some(obs) = &svop {
+    if let Some(obs) = svop {
         for o in obs {
             if let scirust_verify_numerics::ValidObservation::NumericComparison {
                 name,
@@ -291,10 +324,16 @@ pub fn execute_command_check(
         }
     }
 
-    let (status, mut outcome, summary) =
+    let (status, mut outcome, mut summary) =
         crate::providers::interpret_exit(&record.status, *expect, check);
-    if numeric_fail && outcome == Verdict::Verified {
+    if let Some(problem) = structured_evidence_problem {
+        if outcome == Verdict::Verified {
+            outcome = Verdict::NotVerified;
+            summary = problem;
+        }
+    } else if numeric_fail && outcome == Verdict::Verified {
         outcome = Verdict::Failed;
+        summary = "one or more numeric/property observations contradicted the requirement".into();
     }
 
     Ok(CheckExecution {

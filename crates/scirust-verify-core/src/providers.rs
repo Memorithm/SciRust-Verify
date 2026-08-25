@@ -64,36 +64,28 @@ impl VerificationProvider for SourceCleanProvider {
         check: &Check,
         env: &mut ExecutionContext<'_>,
     ) -> Result<CheckExecution, PipelineFailure> {
-        let dirty = match env.project_root.join(".git").exists() {
-            // Re-derive quickly; discovery result is not carried into execute.
-            true => {
-                let out = std::process::Command::new("git")
-                    .args(["status", "--porcelain"])
-                    .current_dir(env.project_root)
-                    .output();
-                match out {
-                    Ok(o) if o.status.success() => {
-                        let n = String::from_utf8_lossy(&o.stdout)
-                            .lines()
-                            .filter(|l| !l.trim().is_empty())
-                            .count();
-                        if n == 0 {
-                            None::<u64>
-                        } else {
-                            Some(n as u64)
-                        }
-                    }
-                    _ => None,
-                }
-            }
-            false => None,
-        };
         let git_present = std::process::Command::new("git")
-            .args(["rev-parse", "--git-dir"])
+            .args(["rev-parse", "--is-inside-work-tree"])
             .current_dir(env.project_root)
             .output()
-            .map(|o| o.status.success())
+            .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
             .unwrap_or(false);
+        let dirty = if git_present {
+            std::process::Command::new("git")
+                .args(["status", "--porcelain"])
+                .current_dir(env.project_root)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .count() as u64
+                })
+        } else {
+            None
+        };
 
         let ev_id = env.sink.next_id();
         let (status, outcome, summary): (scirust_verify_model::CheckStatus, Verdict, String) =
@@ -104,6 +96,14 @@ impl VerificationProvider for SourceCleanProvider {
                     },
                     Verdict::Skipped,
                     "Git unavailable; cleanliness unknown".to_owned(),
+                )
+            } else if dirty.is_none() {
+                (
+                    scirust_verify_model::CheckStatus::Skipped {
+                        reason: "Git worktree detected but status could not be determined".into(),
+                    },
+                    Verdict::Skipped,
+                    "Git worktree detected but cleanliness is unknown".to_owned(),
                 )
             } else if dirty.unwrap_or(0) > 0 {
                 (
@@ -136,14 +136,17 @@ impl VerificationProvider for SourceCleanProvider {
         .observation(Observation::new(
             "worktree_dirty",
             "git_status",
-            ObservedValue::Bool(dirty.unwrap_or(0) > 0 || !git_present),
+            match dirty {
+                Some(n) => ObservedValue::Bool(n > 0),
+                None => ObservedValue::Text("unknown".into()),
+            },
         ))
         .meta(
             "dirty_state",
-            match (git_present, dirty.unwrap_or(0)) {
-                (false, _) => DirtyState::Unknown,
-                (_, 0) => DirtyState::Clean,
-                (_, _) => DirtyState::Dirty,
+            match (git_present, dirty) {
+                (false, _) | (_, None) => DirtyState::Unknown,
+                (_, Some(0)) => DirtyState::Clean,
+                (_, Some(_)) => DirtyState::Dirty,
             },
         )
         .build();

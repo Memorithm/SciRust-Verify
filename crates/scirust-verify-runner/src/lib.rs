@@ -15,6 +15,8 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -311,6 +313,8 @@ pub fn execute(spec: &CommandSpec) -> Result<ExecutionRecord, RunnerError> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     // Apply environment policy: strip secrets/removed vars, then apply sets.
     for (k, _) in std::env::vars_os() {
@@ -367,7 +371,7 @@ pub fn execute(spec: &CommandSpec) -> Result<ExecutionRecord, RunnerError> {
             }
             Err(e) => {
                 // A wait error here is exceptional; treat like a kill.
-                let _ = child.kill();
+                terminate_child_tree(&mut child);
                 let _ = child.wait();
                 let (stdout, stderr) = join_capturers(stdout_handle, stderr_handle);
                 let ended_at_utc = chrono_utc_now();
@@ -392,7 +396,7 @@ pub fn execute(spec: &CommandSpec) -> Result<ExecutionRecord, RunnerError> {
 
     let timed_out = status.is_none();
     if timed_out {
-        let _ = child.kill();
+        terminate_child_tree(&mut child);
         let _ = child.wait();
     }
 
@@ -424,6 +428,26 @@ pub fn execute(spec: &CommandSpec) -> Result<ExecutionRecord, RunnerError> {
         stdout,
         stderr,
     })
+}
+
+#[cfg(unix)]
+fn terminate_child_tree(child: &mut std::process::Child) {
+    // Every Unix child is placed in its own process group above. Killing the
+    // group closes inherited stdout/stderr pipes held by descendants, so the
+    // capture threads cannot outlive the verification deadline.
+    let group = format!("-{}", child.id());
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", group.as_str()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn terminate_child_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
 }
 
 #[cfg(unix)]
