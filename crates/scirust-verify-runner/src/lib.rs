@@ -29,7 +29,7 @@ use thiserror::Error;
 /// The base environment is inherited minus `removed` entries. Secret-like
 /// variable names are always removed regardless of configuration
 /// (defense in depth, not perfect detection).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct EnvPolicy {
     /// Variables explicitly set for the command.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -37,15 +37,6 @@ pub struct EnvPolicy {
     /// Variable names removed from the inherited environment.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remove: Vec<String>,
-}
-
-impl Default for EnvPolicy {
-    fn default() -> Self {
-        Self {
-            set: BTreeMap::new(),
-            remove: Vec::new(),
-        }
-    }
 }
 
 /// Names matching any of these substrings are stripped from the environment
@@ -324,7 +315,7 @@ pub fn execute(spec: &CommandSpec) -> Result<ExecutionRecord, RunnerError> {
     // Apply environment policy: strip secrets/removed vars, then apply sets.
     for (k, _) in std::env::vars_os() {
         let name = k.to_string_lossy().into_owned();
-        if name_is_secret_like(&name) || spec.env.remove.iter().any(|r| *r == name) {
+        if name_is_secret_like(&name) || spec.env.remove.contains(&name) {
             cmd.env_remove(&k);
         }
     }

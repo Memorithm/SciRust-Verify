@@ -119,7 +119,7 @@ impl<'de> Deserialize<'de> for ClaimKind {
 
 impl fmt::Display for ClaimKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.slug())
+        f.write_str(self.slug())
     }
 }
 

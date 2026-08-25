@@ -34,7 +34,6 @@
 
 #![deny(missing_docs)]
 
-use scirust_verify_model::observation::{Observation, ObservedValue};
 use scirust_verify_model::tolerance::Tolerance;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -73,7 +72,7 @@ fn ulp_distance(a: f64, b: f64) -> Option<u64> {
         }
     };
     let (ia, ib) = (to_ordered(a), to_ordered(b));
-    Some(ia.abs_diff(ib) as u64)
+    Some(ia.abs_diff(ib))
 }
 
 /// Compares `expected` against `observed` under `tolerance`.

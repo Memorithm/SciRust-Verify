@@ -239,13 +239,8 @@ impl EvidenceBuilder {
 
     /// Inserts a metadata entry.
     pub fn meta(mut self, key: impl Into<String>, value: impl Serialize) -> Self {
-        match serde_json::to_value(value) {
-            Ok(v) => {
-                self.evidence.metadata.insert(key.into(), v);
-            }
-            // Serialization of plain Rust values cannot realistically fail;
-            // ignore rather than poison the builder.
-            Err(_) => {}
+        if let Ok(v) = serde_json::to_value(value) {
+            self.evidence.metadata.insert(key.into(), v);
         }
         self
     }
