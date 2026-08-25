@@ -22,7 +22,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Apply targeted trust-invariant fixes
-        run: python3 .github/apply_trust_invariant_fixes.py
+        run: |
+          python3 .github/apply_trust_invariant_fixes.py
+          python3 .github/apply_trust_invariant_testfix.py
 
       - name: Format
         run: cargo fmt --all -- --check || { cargo fmt --all; cargo fmt --all -- --check; }
@@ -44,7 +46,7 @@ jobs:
           set -euo pipefail
           git config user.name "SciRust Verify Repair Bot"
           git config user.email "actions@users.noreply.github.com"
-          git rm .github/apply_trust_invariant_fixes.py .github/workflows/apply-trust-invariant-fixes.yml
+          git rm .github/apply_trust_invariant_fixes.py .github/apply_trust_invariant_testfix.py .github/workflows/apply-trust-invariant-fixes.yml
           git add -A
           git diff --cached --check
           git commit -m "fix: enforce verification trust invariants"
