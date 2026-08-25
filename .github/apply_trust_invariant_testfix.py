@@ -18,6 +18,26 @@ if text.count(old) != 1:
     raise SystemExit(f"nested git test block match count={text.count(old)}")
 text = text.replace(old, new, 1)
 
+old = '''    let mut body = std::fs::read_to_string(&manifest).unwrap();
+    body = body.replace(
+        "profile = \\"basic\\"",
+        "profile = \\"basic\\"\\ntargets = [\\"x86_64-unknown-linux-gnu\\"]\\nfeatures = [\\"demo-feature\\"]",
+    );
+    std::fs::write(&manifest, body).unwrap();
+'''
+new = '''    let mut body = std::fs::read_to_string(&manifest).unwrap();
+    body = body.replace(
+        "profile = \\"basic\\"",
+        "profile = \\"basic\\"\\ntargets = [\\"x86_64-unknown-linux-gnu\\"]\\nfeatures = [\\"demo-feature\\"]",
+    );
+    body = body.replace("fmt = false", "fmt = true");
+    body = body.replace("clippy = false", "clippy = true");
+    std::fs::write(&manifest, body).unwrap();
+'''
+if text.count(old) != 1:
+    raise SystemExit(f"cargo selection setup match count={text.count(old)}")
+text = text.replace(old, new, 1)
+
 old = '''    let out = cli()
         .args(["plan", project.to_str().unwrap(), "--json"])
         .output()
