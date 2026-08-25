@@ -92,6 +92,9 @@ enum Command {
         /// Emit the Markdown report.
         #[arg(long)]
         markdown: bool,
+        /// Verify bundle integrity before printing.
+        #[arg(long)]
+        check_integrity: bool,
     },
     /// Re-execute a previous run as a NEW run linked to the original.
     Replay {
@@ -149,7 +152,8 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             run,
             json,
             markdown,
-        } => report(&run, json, markdown),
+            check_integrity,
+        } => report(&run, json, markdown, check_integrity),
         Command::Replay { run, strict } => replay(&run, strict, cli.json),
         Command::Diff { run_a, run_b } => diff(&run_a, &run_b),
         Command::Doctor => doctor(),
@@ -467,6 +471,7 @@ fn verify(
         cli_profile: profile,
         target,
         strict,
+        replay_of: None,
     };
     // Validate manifest up front for crisp errors.
     let manifest_path = opts
@@ -526,11 +531,25 @@ fn open_run(run: &str) -> Result<(PathBuf, scirust_verify_store::RunStore), CliE
     Ok((root, store))
 }
 
-fn report(run: &str, json: bool, markdown: bool) -> Result<ExitCode, CliError> {
+fn report(
+    run: &str,
+    json: bool,
+    markdown: bool,
+    check_integrity: bool,
+) -> Result<ExitCode, CliError> {
     let (_root, store) = open_run(run)?;
     let doc = store
         .read_run_document()
         .map_err(|e| CliError(e.to_string()))?;
+    if check_integrity {
+        match store.verify_integrity() {
+            Ok(n) => println!("integrity OK ({n} sealed files)"),
+            Err(e) => {
+                eprintln!("INTEGRITY FAILURE: {e}");
+                return Ok(ExitCode::from(1));
+            }
+        }
+    }
     if json || (!markdown && is_terminal_json_default()) {
         let text = store.read_text("report.json").map_err(|e| {
             CliError(format!(
@@ -567,33 +586,24 @@ fn replay(run: &str, strict: bool, json: bool) -> Result<ExitCode, CliError> {
         .map_err(|e| CliError(format!("stored manifest missing: {e}")))?;
     let manifest: Manifest = serde_json::from_str(&manifest_text)
         .map_err(|e| CliError(format!("stored manifest unreadable: {e}")))?;
-
-    // The project root recorded in the original artifact decides where to run.
     let artifact = store.read_artifact().map_err(|e| CliError(e.to_string()))?;
     let project_root = artifact.path.clone();
+    drop(store);
 
+    // Replay always creates a NEW run; the original bundle stays untouched.
+    // New runs land next to the original one.
     let opts = VerifyOptions {
         project_root,
-        output_root: Some(root.clone()),
+        output_root: Some(root.join(".scirust-verify")),
         cli_profile: manifest.verification.profile.clone(),
         target: manifest.verification.targets.first().cloned(),
         strict,
+        replay_of: Some(original_doc.run_id.clone()),
     };
-    drop(store);
-
-    let new_store = runs_root_for(&root)
-        .create_run()
-        .map_err(|e| CliError(e.to_string()))?;
-    let _ = new_store.set_replay_of(original_doc.run_id.clone());
 
     let registry = build_registry(&manifest);
     match pipeline::run_verify(&registry, &opts) {
         Ok(outcome) => {
-            // Link the freshly created run back to the original.
-            let link = runs_root_for(&root).open(outcome.run_id.as_str()).ok();
-            if let Some(s) = link {
-                let _ = s.set_replay_of(original_doc.run_id.clone());
-            }
             if json {
                 let doc = serde_json::json!({
                     "replay_of": original_doc.run_id.to_string(),

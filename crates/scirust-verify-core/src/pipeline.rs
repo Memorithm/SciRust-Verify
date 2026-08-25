@@ -36,6 +36,8 @@ pub struct VerifyOptions {
     pub target: Option<String>,
     /// Strict mode: skipped required checks escalate to NotVerified.
     pub strict: bool,
+    /// When replaying: the original run id recorded in the new dossier.
+    pub replay_of: Option<RunId>,
 }
 
 impl VerifyOptions {
@@ -47,6 +49,7 @@ impl VerifyOptions {
             cli_profile: None,
             target: None,
             strict: false,
+            replay_of: None,
         }
     }
 }
@@ -387,6 +390,9 @@ pub fn run_verify(
         tree_digest: provenance_final.tree_digest,
         probes: provenance_final.probes,
     })?;
+    if let Some(original) = &opts.replay_of {
+        store.set_replay_of(original.clone())?;
+    }
     store.write_plan(&checks, plan_digest)?;
     store.write_claims(&claims)?;
     // Persist the effective manifest so `replay` can re-execute faithfully.

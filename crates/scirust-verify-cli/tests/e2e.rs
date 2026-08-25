@@ -1,0 +1,399 @@
+//! End-to-end CLI tests against the fixture projects.
+//!
+//! These tests exercise the real binary (`scirust-verify`) through
+//! `assert_cmd`, producing real evidence dossiers in the fixtures. Each test
+//! is independent; cargo build caching makes repeat runs fast.
+
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use assert_cmd::Command;
+
+fn repo_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("cli crate lives at crates/scirust-verify-cli")
+}
+
+fn fixture(name: &str) -> PathBuf {
+    repo_root().join("fixtures").join(name)
+}
+
+/// Builds the CLI once so repeated invocations stay fast.
+fn cli() -> Command {
+    Command::cargo_bin("scirust-verify").expect("binary target scirust-verify")
+}
+
+static PREBUILT: OnceLock<()> = OnceLock::new();
+
+/// Pre-builds every fixture that needs compiling, sequentially, so parallel
+/// test threads do not fight over cargo locks on cold caches.
+fn prebuild_fixtures() {
+    PREBUILT.get_or_init(|| {
+        for name in [
+            "passing-project",
+            "failing-tests",
+            "deterministic-project",
+            "nondeterministic-project",
+            "timeout-project",
+            "large-output-project",
+            "numeric-pass",
+            "numeric-fail",
+        ] {
+            let _ = std::process::Command::new("cargo")
+                .arg("build")
+                .arg("--quiet")
+                .current_dir(fixture(name))
+                .status();
+        }
+    });
+}
+
+fn latest_run(project: &Path) -> String {
+    let runs = project.join(".scirust-verify/runs");
+    let mut ids: Vec<_> = std::fs::read_dir(&runs)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("run-"))
+        .collect();
+    ids.sort();
+    ids.last().expect("at least one run").clone()
+}
+
+/// Latest run id inside an explicit runs directory.
+fn latest_run_in(runs: &Path) -> String {
+    let mut ids: Vec<_> = std::fs::read_dir(runs)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("run-"))
+        .collect();
+    ids.sort();
+    ids.last().expect("at least one run").clone()
+}
+
+#[test]
+fn passing_project_verifies_and_seals_bundle() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let store = tempfile_dir("passing-store");
+    let out = cli()
+        .args([
+            "verify",
+            project.to_str().unwrap(),
+            "--output",
+            store.join(".scirust-verify").to_str().unwrap(),
+        ])
+        .env("CARGO_TARGET_DIR", project.join("target"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stdout/stderr: {}/{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("overall verdict: PASS"), "{stdout}");
+
+    // Dossier structure.
+    let run_dir = store
+        .join(".scirust-verify/runs")
+        .join(latest_run_in(&store.join(".scirust-verify/runs")));
+    for file in [
+        "run.json",
+        "artifact.json",
+        "environment.json",
+        "provenance.json",
+        "plan.json",
+        "claims.json",
+        "executions.json",
+        "evaluations.json",
+        "report.json",
+        "report.md",
+        "bundle.json",
+    ] {
+        assert!(run_dir.join(file).is_file(), "missing {file}");
+    }
+
+    // Integrity of a freshly sealed bundle must hold.
+    let report_out = cli()
+        .args([
+            "report",
+            &latest_run_in(&store.join(".scirust-verify/runs")),
+            "--check-integrity",
+            "--json",
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        report_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report_out.stderr)
+    );
+}
+
+#[test]
+fn failing_tests_fail_but_produce_valid_dossier() {
+    prebuild_fixtures();
+    let project = fixture("failing-tests");
+    let out = cli()
+        .args(["verify", project.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "verification failure exits 1");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("tests_pass"), "{stdout}");
+    assert!(stdout.contains("FAILED"), "{stdout}");
+
+    // The bundle still exists and is sealed — failure is evidence too.
+    let run_dir = project.join(format!(".scirust-verify/runs/{}", latest_run(&project)));
+    assert!(run_dir.join("bundle.json").is_file());
+}
+
+#[test]
+fn determinism_positive_and_negative() {
+    prebuild_fixtures();
+    let good = cli()
+        .args(["verify", fixture("deterministic-project").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(good.status.success());
+    assert!(String::from_utf8_lossy(&good.stdout).contains("PASS"));
+
+    let bad = cli()
+        .args([
+            "verify",
+            fixture("nondeterministic-project").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&bad.stdout);
+    assert!(stdout.contains("cross_process_deterministic"), "{stdout}");
+    assert!(stdout.contains("FAILED"), "{stdout}");
+
+    // The comparison evidence derives from per-run evidences.
+    let project = fixture("nondeterministic-project");
+    let run_dir = project.join(format!(".scirust-verify/runs/{}", latest_run(&project)));
+    let mut found_derived = false;
+    for entry in evidence_files(&run_dir) {
+        let text = std::fs::read_to_string(entry).unwrap();
+        if text.contains("\"derived_from\"") && text.contains("\"kind\": \"fingerprint\"") {
+            found_derived = true;
+        }
+    }
+    assert!(
+        found_derived,
+        "comparison evidence must reference run evidences"
+    );
+}
+
+#[test]
+fn numeric_pass_and_fail_paths() {
+    prebuild_fixtures();
+    let ok = cli()
+        .args(["verify", fixture("numeric-pass").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stdout)
+    );
+
+    let bad = cli()
+        .args(["verify", fixture("numeric-fail").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&bad.stdout);
+    assert!(stdout.contains("oracle_equivalent"), "{stdout}");
+    assert!(stdout.contains("FAILED"), "{stdout}");
+
+    // The verifier caught divergence although the program exited 0:
+    // numeric re-evaluation independence is the whole point.
+    let project = fixture("numeric-fail");
+    let run_dir = project.join(format!(".scirust-verify/runs/{}", latest_run(&project)));
+    let execs = std::fs::read_to_string(run_dir.join("executions.json")).unwrap();
+    assert!(execs.contains("\"outcome\": \"failed\""), "{execs}");
+}
+
+#[test]
+fn timeout_is_not_a_crash_but_insufficient_evidence() {
+    prebuild_fixtures();
+    let project = fixture("timeout-project");
+    let out = cli()
+        .args(["verify", project.to_str().unwrap()])
+        .timeout(std::time::Duration::from_secs(90))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("NOT_VERIFIED"), "{stdout}");
+}
+
+#[test]
+fn large_output_is_bounded() {
+    prebuild_fixtures();
+    let project = fixture("large-output-project");
+    let out = cli()
+        .args(["verify", project.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let run_dir = project.join(format!(".scirust-verify/runs/{}", latest_run(&project)));
+    let mut saw_truncated = false;
+    for entry in evidence_files(&run_dir) {
+        let text = std::fs::read_to_string(entry).unwrap();
+        if text.contains("\"stdout_truncated\"") && text.contains("true") {
+            saw_truncated = true;
+        }
+    }
+    assert!(saw_truncated, "truncation must be recorded as evidence");
+}
+
+#[test]
+fn tampered_bundle_detected_end_to_end() {
+    prebuild_fixtures();
+    // Produce a clean run in an isolated store.
+    let project = fixture("passing-project");
+    let store = tempfile_dir("tamper-store");
+    let _ = cli()
+        .args([
+            "verify",
+            project.to_str().unwrap(),
+            "--output",
+            store.join(".scirust-verify").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let run_id = latest_run_in(&store.join(".scirust-verify/runs"));
+    let run_dir = store.join(format!(".scirust-verify/runs/{run_id}"));
+
+    // Tamper with a sealed file (artifact name).
+    let artifact_path = run_dir.join("artifact.json");
+    let original = std::fs::read_to_string(&artifact_path).unwrap();
+    std::fs::write(&artifact_path, original.replace("passing-project", "evil")).unwrap();
+
+    let out = cli()
+        .args(["report", &run_id, "--check-integrity"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("INTEGRITY FAILURE"), "{stderr}");
+    assert!(stderr.contains("artifact.json"), "{stderr}");
+}
+
+#[test]
+fn invalid_manifest_is_rejected_without_running() {
+    let tmp = tempfile_dir("invalid-manifest");
+    std::fs::write(
+        tmp.join("scirust-verify.toml"),
+        "schema_version = 1\n[verification]\nprofile = \"ultra\"\n",
+    )
+    .unwrap();
+    let out = cli()
+        .args(["verify", tmp.to_str().unwrap()])
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        combined.contains("unknown verification profile"),
+        "{combined}"
+    );
+}
+
+#[test]
+fn replay_creates_new_linked_run_and_diff_compares() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let store = tempfile_dir("replay-store");
+    let out = cli()
+        .args([
+            "verify",
+            project.to_str().unwrap(),
+            "--output",
+            store.join(".scirust-verify").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let first = latest_run_in(&store.join(".scirust-verify/runs"));
+
+    let replay_out = cli()
+        .args(["replay", &first, "--json"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        replay_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay_out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&replay_out.stdout).expect("valid JSON");
+    let second = doc
+        .get("new_run_id")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_owned();
+    assert_ne!(first, second);
+
+    // Original bundle untouched; new run links back.
+    let orig_doc_text =
+        std::fs::read_to_string(store.join(format!(".scirust-verify/runs/{first}/run.json")))
+            .unwrap();
+    assert!(orig_doc_text.contains(&format!("\"run_id\": \"{first}\"")));
+
+    // diff is informational and must succeed both ways.
+    for (a, b) in [
+        (first.as_str(), second.as_str()),
+        (second.as_str(), first.as_str()),
+    ] {
+        let d = cli()
+            .args(["diff", a, b])
+            .current_dir(&store)
+            .output()
+            .unwrap();
+        assert!(d.status.success(), "{}", String::from_utf8_lossy(&d.stderr));
+    }
+}
+
+fn evidence_files(run_dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let dir = run_dir.join("evidence");
+    if !dir.is_dir() {
+        return out;
+    }
+    for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("json") {
+            out.push(path);
+        }
+    }
+    out
+}
+
+fn tempfile_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "sve-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}

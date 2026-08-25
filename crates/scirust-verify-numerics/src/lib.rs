@@ -333,16 +333,18 @@ impl ProtocolObservation {
                 non_empty(&self.name, "name")?;
                 // Accept either an explicit `fingerprint` key or a string
                 // `value` (the natural spelling for hex payloads).
-                let value_owned = self
-                    .fingerprint
-                    .clone()
-                    .or_else(|| self.value.as_ref().and_then(|v| v.as_str().map(str::to_owned)));
-                let value = value_owned.as_deref().ok_or_else(|| {
-                    ProtocolError::InvalidPayload {
-                        name: self.name.clone(),
-                        reason: "missing `fingerprint`".into(),
-                    }
-                })?;
+                let value_owned = self.fingerprint.clone().or_else(|| {
+                    self.value
+                        .as_ref()
+                        .and_then(|v| v.as_str().map(str::to_owned))
+                });
+                let value =
+                    value_owned
+                        .as_deref()
+                        .ok_or_else(|| ProtocolError::InvalidPayload {
+                            name: self.name.clone(),
+                            reason: "missing `fingerprint`".into(),
+                        })?;
                 non_empty(value, "fingerprint")?;
                 if !value.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err(ProtocolError::InvalidPayload {
@@ -357,12 +359,13 @@ impl ProtocolObservation {
             }
             "metric" => {
                 non_empty(&self.name, "name")?;
-                let raw = self.value.as_ref().ok_or_else(|| {
-                    ProtocolError::InvalidPayload {
+                let raw = self
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| ProtocolError::InvalidPayload {
                         name: self.name.clone(),
                         reason: "missing `value`".into(),
-                    }
-                })?;
+                    })?;
                 let value = raw.as_f64().ok_or_else(|| ProtocolError::InvalidPayload {
                     name: self.name.clone(),
                     reason: "`value` must be a JSON number".into(),

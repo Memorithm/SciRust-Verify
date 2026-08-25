@@ -23,5 +23,8 @@ scirust-verify-report = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+assert_cmd = "2"
+
 [lints]
 workspace = true
