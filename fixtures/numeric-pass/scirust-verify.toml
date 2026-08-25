@@ -1,0 +1,28 @@
+schema_version = 1
+
+[artifact]
+name = "numeric-pass"
+
+[verification]
+profile = "basic"
+timeout_secs = 120
+
+[cargo]
+enabled = true
+fmt = false
+clippy = false
+check = false
+build = true
+test = false
+doc = false
+deny = "off"
+
+[numerics]
+absolute = 1e-6
+relative = 1e-6
+
+[[numeric_checks]]
+id = "oracle-comparison"
+program = "cargo"
+args = ["run", "--quiet", "--bin", "numeric-pass"]
+level = "required"

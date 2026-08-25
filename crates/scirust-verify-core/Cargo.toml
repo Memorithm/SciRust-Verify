@@ -1,0 +1,26 @@
+[package]
+name = "scirust-verify-core"
+description = "Manifest, planning, provenance and verification pipeline for SciRust-Verify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+scirust-verify-model = { workspace = true }
+scirust-verify-runner = { workspace = true }
+scirust-verify-store = { workspace = true }
+scirust-verify-policy = { workspace = true }
+scirust-verify-report = { workspace = true }
+scirust-verify-numerics = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

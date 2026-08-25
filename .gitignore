@@ -2,3 +2,5 @@
 **/*.rs.bk
 .scirust-verify/
 Cargo.lock.bak
+fixtures/**/target
+fixtures/**/.scirust-verify

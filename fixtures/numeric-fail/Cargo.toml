@@ -1,0 +1,10 @@
+[package]
+name = "numeric-fail"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "numeric-fail"
+path = "src/main.rs"
+
+[workspace]

@@ -1,0 +1,28 @@
+schema_version = 1
+
+[artifact]
+name = "timeout-project"
+
+[verification]
+profile = "basic"
+timeout_secs = 2
+
+[cargo]
+enabled = true
+fmt = false
+clippy = false
+check = false
+build = true
+test = false
+doc = false
+deny = "off"
+
+[claims]
+builds = "required"
+
+[[custom_checks]]
+id = "hang"
+program = "cargo"
+args = ["run", "--quiet", "--bin", "slow-app"]
+timeout_secs = 2
+level = "required"

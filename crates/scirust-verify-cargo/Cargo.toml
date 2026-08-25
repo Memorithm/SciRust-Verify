@@ -1,0 +1,21 @@
+[package]
+name = "scirust-verify-cargo"
+description = "Cargo workspace discovery and verification provider for SciRust-Verify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+scirust-verify-model = { workspace = true }
+scirust-verify-runner = { workspace = true }
+scirust-verify-core = { workspace = true }
+scirust-verify-numerics = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[lints]
+workspace = true

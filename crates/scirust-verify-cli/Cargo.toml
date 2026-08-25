@@ -1,0 +1,30 @@
+[package]
+name = "scirust-verify-cli"
+description = "SciRust-Verify command line interface: verification, evidence dossiers, provenance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "scirust-verify"
+path = "src/main.rs"
+
+[dependencies]
+scirust-verify-model = { workspace = true }
+scirust-verify-runner = { workspace = true }
+scirust-verify-store = { workspace = true }
+scirust-verify-core = { workspace = true }
+scirust-verify-cargo = { workspace = true }
+scirust-verify-determinism = { workspace = true }
+scirust-verify-report = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+
+[lints]
+workspace = true

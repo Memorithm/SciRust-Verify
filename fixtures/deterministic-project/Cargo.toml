@@ -1,0 +1,10 @@
+[package]
+name = "deterministic-project"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "det-app"
+path = "src/main.rs"
+
+[workspace]

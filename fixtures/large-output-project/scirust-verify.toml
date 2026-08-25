@@ -1,0 +1,29 @@
+schema_version = 1
+
+[artifact]
+name = "large-output-project"
+
+[verification]
+profile = "basic"
+timeout_secs = 60
+stdout_max_bytes = 65536
+stderr_max_bytes = 65536
+
+[cargo]
+enabled = true
+fmt = false
+clippy = false
+check = false
+build = true
+test = false
+doc = false
+deny = "off"
+
+[claims]
+builds = "required"
+
+[[custom_checks]]
+id = "loud"
+program = "cargo"
+args = ["run", "--quiet", "--bin", "loud-app"]
+level = "required"
