@@ -1,0 +1,10 @@
+[package]
+name = "large-output-project"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "loud-app"
+path = "src/main.rs"
+
+[workspace]

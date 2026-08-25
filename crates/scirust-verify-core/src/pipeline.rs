@@ -407,6 +407,7 @@ pub fn run_verify(
         scope.host = env_snapshot.host.clone();
         scope.toolchain = env_snapshot.toolchain.clone();
         scope.features = manifest_ref.verification.features.clone();
+        scope.tolerance = Some(manifest_ref.numerics.to_tolerance());
         scope.target_triple = opts
             .target
             .clone()

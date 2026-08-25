@@ -1,0 +1,27 @@
+schema_version = 1
+
+[artifact]
+name = "deterministic-project"
+
+[verification]
+profile = "basic"
+timeout_secs = 180
+
+[cargo]
+enabled = true
+fmt = false
+clippy = false
+check = false
+build = true
+test = false
+doc = false
+deny = "off"
+
+[determinism]
+enabled = true
+runs = 3
+program = ["cargo", "run", "--quiet", "--bin", "det-app"]
+mode = "structured"
+
+[claims]
+cross_process_deterministic = "required"

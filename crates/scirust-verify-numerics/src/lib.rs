@@ -236,12 +236,12 @@ pub struct ProtocolObservation {
     /// For `numeric_comparison`: expected value from the oracle/reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected: Option<f64>,
-    /// For `numeric_comparison` / `metric`: value produced by the run.
+    /// For `numeric_comparison`: value produced by the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed: Option<f64>,
-    /// For `metric`: unit string (never omitted for metrics).
+    /// For `metric`: measured value as JSON number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<f64>,
+    pub value: Option<serde_json::Value>,
     /// For `fingerprint`: hex-encoded fingerprint value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
@@ -331,13 +331,18 @@ impl ProtocolObservation {
             }
             "fingerprint" => {
                 non_empty(&self.name, "name")?;
-                let value =
-                    self.fingerprint
-                        .as_deref()
-                        .ok_or_else(|| ProtocolError::InvalidPayload {
-                            name: self.name.clone(),
-                            reason: "missing `fingerprint`".into(),
-                        })?;
+                // Accept either an explicit `fingerprint` key or a string
+                // `value` (the natural spelling for hex payloads).
+                let value_owned = self
+                    .fingerprint
+                    .clone()
+                    .or_else(|| self.value.as_ref().and_then(|v| v.as_str().map(str::to_owned)));
+                let value = value_owned.as_deref().ok_or_else(|| {
+                    ProtocolError::InvalidPayload {
+                        name: self.name.clone(),
+                        reason: "missing `fingerprint`".into(),
+                    }
+                })?;
                 non_empty(value, "fingerprint")?;
                 if !value.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err(ProtocolError::InvalidPayload {
@@ -352,9 +357,15 @@ impl ProtocolObservation {
             }
             "metric" => {
                 non_empty(&self.name, "name")?;
-                let value = self.value.ok_or_else(|| ProtocolError::InvalidPayload {
+                let raw = self.value.as_ref().ok_or_else(|| {
+                    ProtocolError::InvalidPayload {
+                        name: self.name.clone(),
+                        reason: "missing `value`".into(),
+                    }
+                })?;
+                let value = raw.as_f64().ok_or_else(|| ProtocolError::InvalidPayload {
                     name: self.name.clone(),
-                    reason: "missing `value`".into(),
+                    reason: "`value` must be a JSON number".into(),
                 })?;
                 let unit = self
                     .unit
