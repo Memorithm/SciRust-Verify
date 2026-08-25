@@ -34,12 +34,10 @@ use std::path::{Path, PathBuf};
 use scirust_verify_model::check::{Check, CheckExecution};
 use scirust_verify_model::claim::Claim;
 use scirust_verify_model::digest::Digest;
-use scirust_verify_model::evidence::{Attachment, Evidence};
+use scirust_verify_model::evidence::Evidence;
 use scirust_verify_model::provenance::ProvenanceDocument;
 use scirust_verify_model::scope::EnvironmentSnapshot;
-use scirust_verify_model::{
-    Artifact, CheckId, ClaimId, EvidenceId, RunId, SCHEMA_VERSION, TOOL_IDENTITY,
-};
+use scirust_verify_model::{Artifact, RunId, SCHEMA_VERSION, TOOL_IDENTITY};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -580,11 +578,21 @@ impl RunStore {
             }
         }
 
-        // Reference validity: executions -> checks, claims.
-        let check_ids: std::collections::BTreeSet<&str> =
-            plan.checks.iter().map(|c| c.id.as_str()).collect();
+        // Reference validity: checks -> claims, executions -> checks/evidence.
         let claim_ids: std::collections::BTreeSet<&str> =
             claims.iter().map(|c| c.id.as_str()).collect();
+        for check in &plan.checks {
+            for cid in &check.claims {
+                if !claim_ids.contains(cid.as_str()) {
+                    return Err(StoreError::corrupt(
+                        self.run_id.as_str(),
+                        format!("check {} references unknown claim {cid}", check.id),
+                    ));
+                }
+            }
+        }
+        let check_ids: std::collections::BTreeSet<&str> =
+            plan.checks.iter().map(|c| c.id.as_str()).collect();
         for exec in &executions {
             if !check_ids.contains(exec.check_id.as_str()) {
                 return Err(StoreError::corrupt(
