@@ -4,7 +4,7 @@
 
 fn main() {
     let observed = 1.0001; // tolerance in manifest is 1e-6
-    let nan_observed = f64::NAN; // NaN against a finite oracle must fail
+    // NaN against a finite oracle must fail; JSON transports it as "NaN".
     println!("running oracle comparison...");
     println!(
         "SCIRUST_VERIFY_OBS_V1 {{\"kind\":\"numeric_comparison\",\"name\":\"gamma_oracle\",\"expected\":1.0,\"observed\":{observed}}}"
