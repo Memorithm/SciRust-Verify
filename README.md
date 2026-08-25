@@ -187,3 +187,31 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and
 ## License
 
 PolyForm Noncommercial 1.0.0 — see [LICENSE.md](LICENSE.md).
+
+
+## Cross-run scope aggregation
+
+`aggregate` can summarize a claim across multiple finalized dossiers and now verifies every
+bundle before consuming it:
+
+```bash
+scirust-verify aggregate tests_pass RUN_A RUN_B --json
+```
+
+For an explicit scope-coverage gate, require a minimum number of distinct normalized execution
+platforms:
+
+```bash
+scirust-verify aggregate cross_process_deterministic RUN_X86 RUN_ARM \
+  --require-scope --min-platforms 2 --json
+```
+
+Scope certification requires all requested runs to contain matching `VERIFIED` evaluations,
+identical claim definitions, a provably identical source state (tree digest, or a clean Git
+commit), integrity-valid finalized dossiers, identifiable execution scope, and the requested
+number of distinct normalized platforms. Platform identity uses host/target triples, CPU
+architecture/features, backend, and explicit GPU vendor/device/driver data when recorded.
+
+This is **coverage certification, not output comparison**. Two successful runs on CPU and CUDA
+do not establish CPU/GPU parity merely because both are present; parity must itself be a verified
+`cpu_gpu_parity` claim backed by comparison evidence.

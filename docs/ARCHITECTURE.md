@@ -161,3 +161,18 @@ without changing the domain model. See [THREAT_MODEL.md](THREAT_MODEL.md).
   strictly from resolved `cargo metadata`; unknown facts are `NOASSERTION`,
   never fabricated. Enabled via `[cargo] sbom = true` plus the
   `sbom_generated` claim at any level.
+
+
+## Cross-run scope aggregation
+
+Cross-run aggregation is a read-only operation over already finalized dossiers. It first verifies
+`bundle.json` integrity for every input run, then evaluates whether the requested claim is present
+and verified everywhere. Scope certification additionally requires compatible artifact metadata,
+a common strong source anchor, canonical claim-definition identity, and enough distinct normalized
+execution platforms. Missing platform/source data produces `NOT_VERIFIED` scope coverage rather
+than an inferred identity.
+
+`VerificationScope` carries optional explicit `GpuIdentity` data. The field is populated only by
+checks that actually know the GPU backend/device/driver; an execution backend string alone is not
+treated as a hardware identity. Aggregation never upgrades per-run success into CPU/GPU output
+parity unless the underlying verified claim is itself `cpu_gpu_parity`.

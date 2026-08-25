@@ -26,6 +26,7 @@ use scirust_verify_determinism::DeterminismProvider;
 use scirust_verify_model::TOOL_IDENTITY;
 use scirust_verify_store::RunsRoot;
 
+mod aggregate_cli;
 mod artifacts_cli;
 mod scirust_ingest;
 mod signature_cli;
@@ -118,7 +119,7 @@ enum Command {
     Doctor,
     /// Print the persisted-document schema catalog.
     Schema,
-    /// Report one claim's verdicts across multiple runs (read-only; informational).
+    /// Aggregate one claim across integrity-verified dossiers and assess scope coverage.
     Aggregate {
         /// Claim id or substring to match (e.g. `cross_process`).
         claim: String,
@@ -127,6 +128,12 @@ enum Command {
         /// Project root containing `.scirust-verify/runs`.
         #[arg(long)]
         project: Option<PathBuf>,
+        /// Minimum number of distinct normalized execution platforms required for scope certification.
+        #[arg(long, default_value_t = 1)]
+        min_platforms: usize,
+        /// Exit 1 unless source/claim/platform scope is certified in addition to all verdicts being VERIFIED.
+        #[arg(long)]
+        require_scope: bool,
     },
     /// Generate a fresh Ed25519 dossier-signing keypair.
     Keygen {
@@ -241,12 +248,38 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             claim,
             runs,
             project,
+            min_platforms,
+            require_scope,
         } => {
             let root = match project {
                 Some(p) => p,
                 None => locate_runs_root()?,
             };
-            aggregate(&claim, &runs, &root, cli.json)
+            let outcome = aggregate_cli::execute(&aggregate_cli::AggregateOptions {
+                claim_pattern: &claim,
+                runs: &runs,
+                project: &root,
+                min_platforms,
+            })
+            .map_err(|error| CliError {
+                message: error.to_string(),
+                exit_code: error.exit_code(),
+            })?;
+            if cli.json {
+                println!("{}", outcome.document);
+            } else {
+                print!("{}", outcome.human);
+            }
+            let established = if require_scope {
+                outcome.scope_certified
+            } else {
+                outcome.all_verified
+            };
+            Ok(if established {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
         }
         Command::Doctor => doctor(),
         Command::Schema => schema(),
@@ -1055,138 +1088,6 @@ fn push_diff_line(out: &mut Vec<String>, label: &str, a: &Option<String>, b: &Op
         (None, Some(b)) => out.push(format!("added     {label}: now `{b}`")),
         (None, None) => {}
     }
-}
-
-fn aggregate(
-    claim: &str,
-    runs: &[String],
-    project: &Path,
-    json: bool,
-) -> Result<ExitCode, CliError> {
-    if runs.is_empty() {
-        return Err(CliError::usage("aggregate needs at least one run id"));
-    }
-    struct Row {
-        run: String,
-        claim: String,
-        level: String,
-        verdict: String,
-        host_triple: Option<String>,
-        target_triple: Option<String>,
-        rustc: Option<String>,
-    }
-
-    let runs_root = RunsRoot::new(project.join(".scirust-verify").join("runs"));
-    let mut rows = Vec::new();
-    for run_id in runs {
-        let store = runs_root.open(run_id).map_err(|_| {
-            CliError::not_found(format!(
-                "run `{run_id}` not found under {}",
-                runs_root.path().display()
-            ))
-        })?;
-        let eval_text = store
-            .read_text("evaluations.json")
-            .map_err(|e| CliError::not_found(format_missing_eval(run_id, e)))?;
-        let evals: serde_json::Value = serde_json::from_str(&eval_text)
-            .map_err(|e| CliError::usage(format!("run `{run_id}`: {e}")))?;
-        let env_text = store
-            .read_text("environment.json")
-            .map_err(|e| CliError::usage(format!("run `{run_id}`: {e}")))?;
-        let env: serde_json::Value = serde_json::from_str(&env_text).unwrap_or_default();
-
-        for entry in evals
-            .get("evaluations")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default()
-        {
-            let ev = entry.get("evaluation").cloned().unwrap_or_default();
-            let Some(id) = ev.get("claim_id").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if !id.contains(claim) {
-                continue;
-            }
-            rows.push(Row {
-                run: run_id.clone(),
-                claim: id.to_owned(),
-                level: entry
-                    .get("requirement_level")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?")
-                    .to_owned(),
-                verdict: ev
-                    .get("verdict")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?")
-                    .to_owned(),
-                host_triple: env
-                    .pointer("/host/triple")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned),
-                target_triple: env
-                    .pointer("/toolchain/target_triple")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned),
-                rustc: env
-                    .pointer("/toolchain/rustc_version")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned),
-            });
-        }
-    }
-
-    if rows.is_empty() {
-        return Err(CliError::not_found(format!(
-            "no claim matching `{claim}` found in the requested runs"
-        )));
-    }
-
-    let all_verified = rows.iter().all(|r| r.verdict == "verified");
-    if json {
-        let doc = serde_json::json!({
-            "claim_pattern": claim,
-            "runs": rows.iter().map(|r| serde_json::json!({
-                "run": r.run,
-                "claim": r.claim,
-                "level": r.level,
-                "verdict": r.verdict,
-                "host_triple": r.host_triple,
-                "target_triple": r.target_triple,
-                "rustc": r.rustc,
-            })).collect::<Vec<_>>(),
-            "all_verified": all_verified,
-            "note": "informational aggregation across dossiers; scope coverage is not certified automatically",
-        });
-        println!("{doc}");
-    } else {
-        println!("claim pattern `{claim}` across {} run(s):", runs.len());
-        for r in &rows {
-            println!(
-                "  {} [{:>13}] {:<40} {:<12} host={} target={}",
-                r.run,
-                r.level,
-                r.claim,
-                r.verdict.to_uppercase(),
-                r.host_triple.as_deref().unwrap_or("?"),
-                r.target_triple.as_deref().unwrap_or("?"),
-            );
-        }
-        println!("all verified: {}", if all_verified { "yes" } else { "no" });
-        println!(
-            "note: informational aggregation across dossiers; scope coverage (distinct platforms/toolchains) is not certified automatically."
-        );
-    }
-    Ok(if all_verified {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
-    })
-}
-
-fn format_missing_eval(run_id: &str, e: scirust_verify_store::StoreError) -> String {
-    format!("run `{run_id}` has no evaluations document ({e}); only finalized verify/ingest runs can be aggregated")
 }
 
 fn ingest_scirust(

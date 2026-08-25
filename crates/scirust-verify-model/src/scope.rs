@@ -42,6 +42,15 @@ impl CpuIdentity {
     }
 }
 
+impl GpuIdentity {
+    fn is_empty(&self) -> bool {
+        self.backend.is_none()
+            && self.vendor.is_none()
+            && self.device.is_none()
+            && self.driver.is_none()
+    }
+}
+
 /// Host machine identity.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -117,6 +126,10 @@ pub struct VerificationScope {
     /// Execution backend (`cpu`, `wgpu`, `cuda`, ...), when applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    /// GPU identity when a GPU-dependent check actually executed. The field is
+    /// absent for CPU-only scopes and must never be populated from guesswork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuIdentity>,
     /// Identifier of the input data set used, when applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_set: Option<String>,
@@ -147,10 +160,10 @@ impl VerificationScope {
     /// Returns true if any GPU identity has been recorded — used by report
     /// generation to avoid claiming GPU coverage that does not exist.
     pub fn gpu_is_unknown(&self) -> bool {
-        // GPU identity lives in `backend`/environment notes in V0.1; a
-        // dedicated field appears once real GPU checks exist.
-        self.backend.as_deref().map(|b| !b.is_empty()) != Some(true)
-            || self.backend.as_deref() == Some("cpu")
+        match &self.gpu {
+            Some(gpu) => gpu.is_empty(),
+            None => true,
+        }
     }
 }
 
@@ -195,5 +208,30 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"seed\":42"));
         assert!(!json.contains("target_triple"));
+    }
+
+    #[test]
+    fn gpu_identity_is_explicit_scope_data() {
+        let scope = VerificationScope {
+            backend: Some("cuda".into()),
+            gpu: Some(GpuIdentity {
+                backend: Some("cuda".into()),
+                vendor: Some("NVIDIA".into()),
+                device: Some("Example GPU".into()),
+                driver: Some("999.0".into()),
+            }),
+            ..Default::default()
+        };
+        assert!(!scope.gpu_is_unknown());
+        let json = serde_json::to_string(&scope).unwrap();
+        assert!(json.contains("Example GPU"));
+        let roundtrip: VerificationScope = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip, scope);
+
+        let cpu_only = VerificationScope {
+            backend: Some("cpu".into()),
+            ..Default::default()
+        };
+        assert!(cpu_only.gpu_is_unknown());
     }
 }
