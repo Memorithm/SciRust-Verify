@@ -267,32 +267,32 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             signature,
             project,
         } => signature_cli::verify_signature(&run, public_key, signature, project, cli.json),
-        Command::VerifyCapsule { bundle, output } => match artifacts_cli::verify_capsule(
-            &artifacts_cli::IngestOptions {
+        Command::VerifyCapsule { bundle, output } => {
+            match artifacts_cli::verify_capsule(&artifacts_cli::IngestOptions {
                 input: bundle,
                 project_root: current_dir(),
                 output_root: output.map(|o| o.join(".scirust-verify")),
-            },
-        ) {
-            Ok(o) => Ok(artifact_exit_ok(&o, cli.json)),
-            Err(e) => {
-                eprintln!("error: {e}");
-                Ok(ExitCode::from(2))
+            }) {
+                Ok(o) => Ok(artifact_exit_ok(&o, cli.json)),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::from(2))
+                }
             }
-        },
-        Command::IngestForge { envelope, output } => match artifacts_cli::ingest_forge(
-            &artifacts_cli::IngestOptions {
+        }
+        Command::IngestForge { envelope, output } => {
+            match artifacts_cli::ingest_forge(&artifacts_cli::IngestOptions {
                 input: envelope,
                 project_root: current_dir(),
                 output_root: output.map(|o| o.join(".scirust-verify")),
-            },
-        ) {
-            Ok(o) => Ok(artifact_exit_ok(&o, cli.json)),
-            Err(e) => {
-                eprintln!("error: {e}");
-                Ok(ExitCode::from(2))
+            }) {
+                Ok(o) => Ok(artifact_exit_ok(&o, cli.json)),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    Ok(ExitCode::from(2))
+                }
             }
-        },
+        }
         Command::IngestScirust {
             bundle,
             project,
