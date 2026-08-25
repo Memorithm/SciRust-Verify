@@ -170,8 +170,7 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String, std::io::Error> {
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        Err(std::io::Error::other(
             String::from_utf8_lossy(&out.stderr).into_owned(),
         ))
     }

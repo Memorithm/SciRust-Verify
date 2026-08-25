@@ -93,7 +93,7 @@ pub struct ArtifactSection {
 }
 
 /// `[verification]` section.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerificationSection {
     /// Policy profile name.
@@ -115,19 +115,6 @@ pub struct VerificationSection {
     /// deliberately not supported because feature sets may be exclusive.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
-}
-
-impl Default for VerificationSection {
-    fn default() -> Self {
-        Self {
-            profile: None,
-            timeout_secs: None,
-            stdout_max_bytes: None,
-            stderr_max_bytes: None,
-            targets: Vec::new(),
-            features: Vec::new(),
-        }
-    }
 }
 
 /// `[cargo]` provider toggles.

@@ -228,7 +228,7 @@ pub fn render_json(store: &RunStore, inputs: &ReportInputs) -> Result<String, Re
         "generated_by": inputs.tool_version,
         "generated_at_utc": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         "run": loaded.run_doc_json,
-        "overall_verdict": serde_json::to_value(&verdict).unwrap_or_default(),
+        "overall_verdict": serde_json::to_value(verdict).unwrap_or_default(),
         "strict_mode": inputs.strict,
         "detected_providers": inputs.detected_providers,
         "artifact": loaded.artifact,

@@ -42,23 +42,13 @@ pub fn combine_verdicts(verdicts: &[Verdict]) -> Verdict {
     if verdicts.contains(&NotVerified) {
         return NotVerified;
     }
-    if verdicts.iter().any(|v| *v == Verified) {
+    if verdicts.contains(&Verified) {
         return Verified;
     }
     if verdicts.iter().all(|v| *v == Unsupported) {
         return Unsupported;
     }
     Skipped
-}
-
-fn rank(v: Verdict) -> u8 {
-    match v {
-        Verdict::Failed => 4,
-        Verdict::NotVerified => 3,
-        Verdict::Unsupported => 2,
-        Verdict::Skipped => 1,
-        Verdict::Verified => 0,
-    }
 }
 
 /// Evaluates every registered claim against the recorded executions.
@@ -157,6 +147,16 @@ mod tests {
             combine_verdicts(&[Verdict::Unsupported, Verdict::Skipped]),
             Verdict::Skipped
         );
+    }
+
+    fn rank(v: Verdict) -> u8 {
+        match v {
+            Verdict::Failed => 4,
+            Verdict::NotVerified => 3,
+            Verdict::Unsupported => 2,
+            Verdict::Skipped => 1,
+            Verdict::Verified => 0,
+        }
     }
 
     #[test]
