@@ -694,6 +694,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "hex",
+ "libc",
  "rand_core",
  "scirust-verify-model",
  "serde",

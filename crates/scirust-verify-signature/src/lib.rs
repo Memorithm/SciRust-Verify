@@ -554,6 +554,11 @@ fn write_public_json<T: Serialize>(
     } else {
         options.create_new(true);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
     let mut file = options
         .open(path)
         .map_err(|e| SignatureError::io(path, e))?;
@@ -584,21 +589,21 @@ fn write_private_json<T: Serialize>(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     let result = (|| -> Result<(), SignatureError> {
         let mut file = options
             .open(path)
             .map_err(|e| SignatureError::io(path, e))?;
-        file.write_all(&bytes)
-            .map_err(|e| SignatureError::io(path, e))?;
-        file.sync_all().map_err(|e| SignatureError::io(path, e))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            file.set_permissions(fs::Permissions::from_mode(0o600))
                 .map_err(|e| SignatureError::io(path, e))?;
         }
+        file.write_all(&bytes)
+            .map_err(|e| SignatureError::io(path, e))?;
+        file.sync_all().map_err(|e| SignatureError::io(path, e))?;
         Ok(())
     })();
     bytes.zeroize();
@@ -756,6 +761,39 @@ mod tests {
         generate_keypair(&private, &public, false).unwrap();
         let mode = fs::metadata(&private).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_key_force_overwrite_restores_restrictive_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = temp_dir("force-permissions");
+        let private = dir.join("private.json");
+        let public = dir.join("public.json");
+        generate_keypair(&private, &public, false).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o644)).unwrap();
+        generate_keypair(&private, &public, true).unwrap();
+        let mode = fs::metadata(&private).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn force_never_follows_final_component_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = temp_dir("force-symlink");
+        let victim = dir.join("victim.json");
+        let private = dir.join("private.json");
+        let public = dir.join("public.json");
+        fs::write(&victim, b"do-not-touch").unwrap();
+        symlink(&victim, &private).unwrap();
+        assert!(matches!(
+            generate_keypair(&private, &public, true),
+            Err(SignatureError::SymlinkOutput(_)) | Err(SignatureError::Io { .. })
+        ));
+        assert_eq!(fs::read(&victim).unwrap(), b"do-not-touch");
         let _ = fs::remove_dir_all(dir);
     }
 
