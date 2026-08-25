@@ -22,7 +22,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Apply V0.3 patch
-        run: python3 .github/apply_v03_scope_aggregation.py
+        run: |
+          python3 .github/apply_v03_scope_aggregation.py
+          python3 .github/fix_v03_clippy.py
 
       - name: Format product changes
         run: cargo fmt --all
@@ -105,6 +107,6 @@ jobs:
       - name: Remove staging files and push validated branch
         run: |
           set -euo pipefail
-          git rm .github/apply_v03_scope_aggregation.py .github/workflows/apply-v03-scope-aggregation.yml
+          git rm .github/apply_v03_scope_aggregation.py .github/fix_v03_clippy.py .github/workflows/apply-v03-scope-aggregation.yml
           git commit -m "chore: remove V0.3 staging workflow"
           git push origin HEAD:feat/cross-run-scope-aggregation
