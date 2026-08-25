@@ -434,18 +434,18 @@ fn plan(path: PathBuf, profile: Option<String>, json: bool) -> Result<ExitCode, 
             prepared.checks.len(),
             &prepared.plan_digest.value[..16]
         );
-        println!(
-            "{:<28} {:<10} {:<12} {}",
-            "CHECK", "PROVIDER", "LEVEL", "PURPOSE"
-        );
+        println!("{:<28} {:<10} {:<12} PURPOSE", "CHECK", "PROVIDER", "LEVEL");
         for c in &prepared.checks {
             println!(
-                "{:<28} {:<10} {:<12} {}",
+                "{:<28} {:<10} {:<12}",
                 c.id.as_str(),
                 c.provider,
-                c.requirement.to_string(),
-                c.purpose
+                c.requirement.to_string()
             );
+            println!("  purpose: {}", c.purpose);
+            if let scirust_verify_model::CheckAction::Command { command, .. } = &c.action {
+                println!("  command: {} {}", command.program, command.args.join(" "));
+            }
         }
         println!("\nrun `scirust-verify verify` to execute this plan.");
     }
@@ -802,7 +802,7 @@ fn doctor() -> Result<ExitCode, CliError> {
         let installed = scirust_verify_runner::which(t.program).is_some();
         let version = scirust_verify_core::provenance::probe(
             Path::new("."),
-            &[t.program]
+            [t.program]
                 .iter()
                 .copied()
                 .chain(t.args.iter().copied())

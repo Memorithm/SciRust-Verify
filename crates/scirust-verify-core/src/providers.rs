@@ -218,8 +218,7 @@ impl VerificationProvider for CustomChecksProvider {
                     expect: Default::default(),
                 },
                 timeout: Duration::from_secs(
-                    c.timeout_secs
-                        .unwrap_or_else(|| request.default_timeout.as_secs()),
+                    c.timeout_secs.unwrap_or(request.default_timeout.as_secs()),
                 ),
                 stdout_limit_bytes: request.stdout_limit,
                 stderr_limit_bytes: request.stderr_limit,
@@ -360,8 +359,7 @@ impl VerificationProvider for NumericChecksProvider {
                     expect: ExitExpectation::Success,
                 },
                 timeout: Duration::from_secs(
-                    c.timeout_secs
-                        .unwrap_or_else(|| request.default_timeout.as_secs()),
+                    c.timeout_secs.unwrap_or(request.default_timeout.as_secs()),
                 ),
                 stdout_limit_bytes: request.stdout_limit,
                 stderr_limit_bytes: request.stderr_limit,

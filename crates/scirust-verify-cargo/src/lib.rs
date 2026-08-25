@@ -44,9 +44,7 @@ impl CargoProvider {
         if !self.section.enabled {
             return None;
         }
-        let Some(first_claim) = claims.first() else {
-            return None;
-        };
+        let first_claim = claims.first()?;
         if !request.claim_levels.contains_key(*first_claim) {
             // Claim disabled ("off") in the manifest.
             return None;

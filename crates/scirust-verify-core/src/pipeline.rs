@@ -303,7 +303,6 @@ pub fn prepare(
     }
 
     // Deterministic plan order + digest over the canonical form.
-    let mut checks = checks;
     checks.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
     let plan_canonical = canonical_json(&checks)
         .map_err(|e| PipelineError::Report(format!("canonicalization failed: {e}")))?;
