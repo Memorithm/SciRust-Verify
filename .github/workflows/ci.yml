@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: never
+  RUSTFLAGS: -D warnings
+
+jobs:
+  verify:
+    name: fmt / check / clippy / test / doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check (all targets, locked)
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Unit & integration tests
+        run: cargo test --workspace --all-targets --locked
+
+      - name: Documentation (deny warnings)
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+
+  self-verification:
+    name: Dogfood — scirust-verify verify .
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry & build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build CLI
+        run: cargo build --release --locked -p scirust-verify-cli
+
+      - name: Verify this repository with itself
+        run: ./target/release/scirust-verify verify .
+
+      - name: Verify passing fixture end-to-end
+        run: ./target/release/scirust-verify verify fixtures/passing-project
+
+      - name: Failing fixture must exit 1 but seal a dossier
+        run: |
+          set +e
+          ./target/release/scirust-verify verify fixtures/failing-tests
+          code=$?
+          set -e
+          test "$code" -eq 1
+          latest=$(ls -d fixtures/failing-tests/.scirust-verify/runs/run-* | sort | tail -1)
+          test -f "$latest/bundle.json"
+          test -f "$latest/report.json"

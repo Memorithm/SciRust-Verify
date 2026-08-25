@@ -561,6 +561,10 @@ dependencies = [
 [[package]]
 name = "scirust-verify-scirust"
 version = "0.1.0"
+dependencies = [
+ "scirust-verify-model",
+ "thiserror",
+]
 
 [[package]]
 name = "scirust-verify-store"

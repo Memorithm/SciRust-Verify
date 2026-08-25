@@ -1,6 +1,6 @@
 [package]
 name = "scirust-verify-scirust"
-description = "SciRust-Verify scirust component"
+description = "Adapter ingesting SciRust functional-acceptance protocol evidence into SciRust-Verify dossiers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,8 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+scirust-verify-model = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

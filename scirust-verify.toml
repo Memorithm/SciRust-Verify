@@ -1,0 +1,25 @@
+schema_version = 1
+
+[artifact]
+name = "scirust-verify"
+
+[verification]
+profile = "basic"
+timeout_secs = 900
+
+[cargo]
+enabled = true
+fmt = true
+clippy = true
+check = false
+build = true
+test = true
+doc = false
+deny = "off"
+
+[claims]
+builds = "required"
+tests_pass = "required"
+lint_clean = "required"
+fmt_clean = "required"
+source_clean = "informational"
