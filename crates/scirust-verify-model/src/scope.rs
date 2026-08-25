@@ -157,8 +157,8 @@ impl HostIdentity {
 }
 
 impl VerificationScope {
-    /// Returns true if any GPU identity has been recorded — used by report
-    /// generation to avoid claiming GPU coverage that does not exist.
+    /// Returns true when no concrete GPU identity has been recorded. Report
+    /// generation uses this to avoid claiming GPU coverage that does not exist.
     pub fn gpu_is_unknown(&self) -> bool {
         match &self.gpu {
             Some(gpu) => gpu.is_empty(),
