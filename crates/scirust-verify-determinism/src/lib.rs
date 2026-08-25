@@ -172,6 +172,7 @@ impl VerificationProvider for DeterminismProvider {
         let mut all_ok = true;
         let mut any_timeout = false;
         let mut successful_runs = 0usize;
+        let mut fingerprint_errors = 0usize;
         let mut run_evidence_ids = Vec::new();
         let mut notes = Vec::new();
 
@@ -216,8 +217,16 @@ impl VerificationProvider for DeterminismProvider {
             payloads.insert(stderr_path.clone(), record.stderr.data.clone());
 
             let ev_id = env.sink.next_id();
-            let fingerprint = fingerprint_of(&mode, &record);
-            fingerprints.insert(plan.label.clone(), fingerprint);
+            match fingerprint_of(&mode, &record) {
+                Ok(fingerprint) => {
+                    fingerprints.insert(plan.label.clone(), fingerprint);
+                }
+                Err(reason) => {
+                    all_ok = false;
+                    fingerprint_errors += 1;
+                    notes.push(format!("{}: {reason}", plan.label));
+                }
+            }
 
             let evidence = scirust_verify_model::Evidence::builder(
                 ev_id.clone(),
@@ -296,11 +305,18 @@ impl VerificationProvider for DeterminismProvider {
         )
         .artifact(env.artifact.clone())
         .scope(env.scope.clone())
-        .status(if all_ok && distinct.len() == 1 && successful_runs >= 2 {
-            EvidenceStatus::Ok
-        } else {
-            EvidenceStatus::Failed
-        })
+        .status(
+            if all_ok
+                && fingerprint_errors == 0
+                && fingerprints.len() == plans.len()
+                && distinct.len() == 1
+                && successful_runs >= 2
+            {
+                EvidenceStatus::Ok
+            } else {
+                EvidenceStatus::Failed
+            },
+        )
         .observations(cmp_obs)
         .derived_from(run_evidence_ids.iter().cloned())
         .build();
@@ -317,6 +333,14 @@ impl VerificationProvider for DeterminismProvider {
                 format!(
                     "only {successful_runs} of {} executions completed; insufficient evidence",
                     plans.len()
+                ),
+            )
+        } else if fingerprint_errors > 0 || fingerprints.len() != plans.len() {
+            (
+                Verdict::NotVerified,
+                format!(
+                    "{} execution(s) did not yield a complete comparable fingerprint",
+                    fingerprint_errors
                 ),
             )
         } else if distinct.len() == 1 {
@@ -358,27 +382,36 @@ impl VerificationProvider for DeterminismProvider {
     }
 }
 
-fn fingerprint_of(mode: &str, record: &scirust_verify_runner::ExecutionRecord) -> String {
+fn fingerprint_of(
+    mode: &str,
+    record: &scirust_verify_runner::ExecutionRecord,
+) -> Result<String, String> {
+    if record.stdout.truncated {
+        return Err("stdout was truncated; fingerprint would cover incomplete output".into());
+    }
     match mode {
         "structured" => {
-            // Canonical fingerprint over SVOP fingerprint observations only.
-            match scirust_verify_numerics::parse_observations(&record.stdout_lossy()) {
-                Ok(obs) => {
-                    let mut canonical = String::new();
-                    for o in &obs {
-                        if let scirust_verify_numerics::ValidObservation::Fingerprint {
-                            name,
-                            value,
-                        } = o
-                        {
-                            canonical.push_str(&format!("{name}={value}\n"));
-                        }
+            let obs = scirust_verify_numerics::parse_observations(&record.stdout_lossy())
+                .map_err(|e| format!("invalid structured fingerprint evidence: {e}"))?;
+            let mut pairs: Vec<(String, String)> = obs
+                .into_iter()
+                .filter_map(|o| match o {
+                    scirust_verify_numerics::ValidObservation::Fingerprint { name, value } => {
+                        Some((name, value))
                     }
-                    scirust_verify_model::Digest::sha256_hex(canonical.as_bytes()).value
-                }
-                Err(_) => "unparseable-structured-output".to_owned(),
+                    _ => None,
+                })
+                .collect();
+            if pairs.is_empty() {
+                return Err("no structured fingerprint observation was emitted".into());
             }
+            pairs.sort();
+            let mut canonical = String::new();
+            for (name, value) in pairs {
+                canonical.push_str(&format!("{name}={value}\n"));
+            }
+            Ok(scirust_verify_model::Digest::sha256_hex(canonical.as_bytes()).value)
         }
-        _ => record.stdout_digest().value,
+        _ => Ok(record.stdout_digest().value),
     }
 }

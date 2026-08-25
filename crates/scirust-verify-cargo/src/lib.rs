@@ -129,8 +129,7 @@ impl VerificationProvider for CargoProvider {
         }
 
         if self.section.fmt {
-            let mut args = vec!["fmt".into(), "--all".into(), "--".into(), "--check".into()];
-            target_args(&mut args);
+            let args = vec!["fmt".into(), "--all".into(), "--".into(), "--check".into()];
             checks.extend(self.command_check(
                 "fmt",
                 "`cargo fmt --check`: source formatting is canonical",
@@ -146,11 +145,9 @@ impl VerificationProvider for CargoProvider {
                 "clippy".into(),
                 "--workspace".into(),
                 "--all-targets".into(),
-                "--".into(),
-                "-D".into(),
-                "warnings".into(),
             ];
             target_args(&mut args);
+            args.extend(["--".into(), "-D".into(), "warnings".into()]);
             checks.extend(self.command_check(
                 "clippy",
                 "`cargo clippy -D warnings`: no lint warnings",

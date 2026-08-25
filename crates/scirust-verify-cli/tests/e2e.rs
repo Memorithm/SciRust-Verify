@@ -503,6 +503,126 @@ fn paths_with_spaces_and_unicode_roundtrip() {
     );
 }
 
+#[test]
+fn numeric_exit_zero_without_observation_is_not_verified() {
+    prebuild_fixtures();
+    let project = tempfile_dir("numeric-missing-evidence");
+    copy_dir(&fixture("numeric-pass"), &project);
+    std::fs::write(
+        project.join("src/main.rs"),
+        "fn main() { println!(\"plain output only\"); }\n",
+    )
+    .unwrap();
+    let out = cli()
+        .args(["verify", project.to_str().unwrap()])
+        .timeout(std::time::Duration::from_secs(180))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("oracle_equivalent"), "{stdout}");
+    assert!(stdout.contains("NOT_VERIFIED"), "{stdout}");
+}
+
+#[test]
+fn structured_determinism_without_fingerprint_is_not_verified() {
+    prebuild_fixtures();
+    let project = tempfile_dir("determinism-missing-fingerprint");
+    copy_dir(&fixture("deterministic-project"), &project);
+    std::fs::write(
+        project.join("src/main.rs"),
+        "fn main() { println!(\"plain output only\"); }\n",
+    )
+    .unwrap();
+    let out = cli()
+        .args(["verify", project.to_str().unwrap()])
+        .timeout(std::time::Duration::from_secs(180))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("cross_process_deterministic"), "{stdout}");
+    assert!(stdout.contains("NOT_VERIFIED"), "{stdout}");
+}
+
+#[test]
+fn nested_git_project_detects_dirty_parent_worktree() {
+    prebuild_fixtures();
+    let root = tempfile_dir("nested-git-dirty");
+    let project = root.join("nested/project");
+    copy_dir(&fixture("passing-project"), &project);
+    let manifest = project.join("scirust-verify.toml");
+    let mut body = std::fs::read_to_string(&manifest).unwrap();
+    body.push_str("\n[claims]\nsource_clean = \"required\"\n");
+    std::fs::write(&manifest, body).unwrap();
+    for args in [
+        vec!["init"],
+        vec!["config", "user.email", "ci@example.invalid"],
+        vec!["config", "user.name", "SciRust Verify CI"],
+        vec!["add", "."],
+        vec!["commit", "-m", "fixture"],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    std::fs::write(project.join("dirty.txt"), "dirty\n").unwrap();
+    let out = cli()
+        .args(["verify", project.to_str().unwrap()])
+        .timeout(std::time::Duration::from_secs(180))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("source_clean"), "{stdout}");
+    assert!(stdout.contains("FAILED"), "{stdout}");
+}
+
+#[test]
+fn cargo_selection_flags_are_before_clippy_separator_and_absent_from_fmt() {
+    prebuild_fixtures();
+    let project = tempfile_dir("cargo-selection-plan");
+    copy_dir(&fixture("passing-project"), &project);
+    let manifest = project.join("scirust-verify.toml");
+    let mut body = std::fs::read_to_string(&manifest).unwrap();
+    body = body.replace(
+        "profile = \"basic\"",
+        "profile = \"basic\"\ntargets = [\"x86_64-unknown-linux-gnu\"]\nfeatures = [\"demo-feature\"]",
+    );
+    body = body.replace("fmt = false", "fmt = true");
+    body = body.replace("clippy = false", "clippy = true");
+    std::fs::write(&manifest, body).unwrap();
+    let out = cli()
+        .args(["plan", project.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let fmt = text
+        .lines()
+        .find(|line| line.contains("command: cargo fmt"))
+        .unwrap();
+    assert!(
+        !fmt.contains("--target") && !fmt.contains("--features"),
+        "{fmt}"
+    );
+    let clippy = text
+        .lines()
+        .find(|line| line.contains("command: cargo clippy"))
+        .unwrap();
+    let sep = clippy.find(" -- ").unwrap();
+    let target = clippy.find("--target").unwrap();
+    let features = clippy.find("--features").unwrap();
+    assert!(target < sep && features < sep, "{clippy}");
+}
+
 fn copy_dir(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap().flatten() {
