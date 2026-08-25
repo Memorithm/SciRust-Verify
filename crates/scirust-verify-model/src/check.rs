@@ -145,6 +145,13 @@ pub struct CheckExecution {
     pub ended_at_utc: Option<DateTime<Utc>>,
     /// Terminal status.
     pub status: CheckStatus,
+    /// The provider's final interpretation of this execution. A scientific
+    /// failure (`Failed`) is distinct from an internal error: the record is
+    /// still complete evidence.
+    pub outcome: Verdict,
+    /// One-line human explanation of the outcome, shown in reports.
+    #[serde(default)]
+    pub summary: String,
     /// Facts extracted from the execution.
     pub observations: Vec<Observation>,
     /// Evidence objects produced by this execution.
@@ -156,11 +163,14 @@ pub struct CheckExecution {
 impl CheckExecution {
     /// Creates an execution record for a status without observations.
     pub fn minimal(check_id: CheckId, status: CheckStatus) -> Self {
+        let outcome = status.base_verdict();
         Self {
             check_id,
             started_at_utc: None,
             ended_at_utc: None,
             status,
+            outcome,
+            summary: String::new(),
             observations: Vec::new(),
             evidence_ids: Vec::new(),
             notes: Vec::new(),
