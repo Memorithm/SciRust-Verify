@@ -1,6 +1,6 @@
 [package]
 name = "scirust-verify-determinism"
-description = "SciRust-Verify determinism component"
+description = "Cross-process determinism verification engine for SciRust-Verify"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,12 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+scirust-verify-model = { workspace = true }
+scirust-verify-runner = { workspace = true }
+scirust-verify-core = { workspace = true }
+chrono = { workspace = true }
+scirust-verify-numerics = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

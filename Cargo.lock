@@ -305,6 +305,14 @@ dependencies = [
 [[package]]
 name = "scirust-verify-determinism"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "scirust-verify-core",
+ "scirust-verify-model",
+ "scirust-verify-numerics",
+ "scirust-verify-runner",
+ "serde_json",
+]
 
 [[package]]
 name = "scirust-verify-model"
