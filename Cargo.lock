@@ -270,6 +270,15 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 [[package]]
 name = "scirust-verify-cargo"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "scirust-verify-core",
+ "scirust-verify-model",
+ "scirust-verify-numerics",
+ "scirust-verify-runner",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "scirust-verify-cli"
@@ -281,6 +290,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "scirust-verify-model",
+ "scirust-verify-numerics",
  "scirust-verify-policy",
  "scirust-verify-report",
  "scirust-verify-runner",

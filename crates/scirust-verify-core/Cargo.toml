@@ -14,6 +14,7 @@ scirust-verify-runner = { workspace = true }
 scirust-verify-store = { workspace = true }
 scirust-verify-policy = { workspace = true }
 scirust-verify-report = { workspace = true }
+scirust-verify-numerics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

@@ -34,6 +34,7 @@
 
 #![deny(missing_docs)]
 
+use scirust_verify_model::observation::{Observation, ObservedValue};
 use scirust_verify_model::tolerance::Tolerance;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -179,6 +180,52 @@ pub fn compare(expected: f64, observed: f64, tolerance: &Tolerance) -> Compariso
 pub const OBS_MARKER: &str = "SCIRUST_VERIFY_OBS_V1";
 
 /// One structured observation emitted by a verified program.
+impl ValidObservation {
+    /// Converts into the generic model observation for evidence storage.
+    pub fn to_model_observation(&self) -> Observation {
+        match self {
+            Self::NumericComparison {
+                name,
+                expected,
+                observed,
+                unit,
+            } => {
+                let mut o = Observation::new(
+                    "numeric_comparison",
+                    name.clone(),
+                    ObservedValue::Json(serde_json::json!({
+                        "expected": expected,
+                        "observed": observed,
+                    })),
+                );
+                o.unit = unit.clone();
+                o
+            }
+            Self::Fingerprint { name, value } => Observation::new(
+                "fingerprint",
+                name.clone(),
+                ObservedValue::Text(value.clone()),
+            ),
+            Self::Metric { name, value, unit } => {
+                Observation::new("metric", name.clone(), ObservedValue::Float(*value))
+                    .with_unit(unit.clone())
+            }
+            Self::Property {
+                name,
+                holds,
+                description,
+            } => {
+                let mut o = Observation::new("property", name.clone(), ObservedValue::Bool(*holds));
+                o.unit = Some(description.clone());
+                o
+            }
+        }
+    }
+}
+
+/// One raw structured observation line payload, as emitted by verified
+/// programs. Fields are optional because the wire format is flat; validity
+/// is enforced per-kind by [`ProtocolObservation::validate`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProtocolObservation {
     /// Discriminant of the observation kind (`numeric_comparison`,
@@ -355,7 +402,6 @@ impl ProtocolObservation {
         &self.name
     }
 }
-
 /// Errors from parsing structured observations out of process output.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum ProtocolError {

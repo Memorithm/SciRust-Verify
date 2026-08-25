@@ -8,6 +8,7 @@ pub mod manifest;
 pub mod pipeline;
 pub mod planning;
 pub mod provenance;
+pub mod providers;
 pub mod tree_digest;
 pub mod verdict_engine;
 

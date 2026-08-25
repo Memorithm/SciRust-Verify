@@ -39,7 +39,9 @@ pub mod tolerance;
 pub mod verdict;
 
 pub use artifact::{Artifact, ArtifactKind, DirtyState, SourceIdentity};
-pub use check::{Check, CheckAction, CheckExecution, CheckStatus, CommandTemplate};
+pub use check::{
+    Check, CheckAction, CheckExecution, CheckStatus, CommandTemplate, ExitExpectation,
+};
 pub use claim::{Claim, ClaimEvaluation, ClaimKind};
 pub use digest::{canonical_json, Digest, DigestAlgorithm};
 pub use evidence::{Attachment, Evidence, EvidenceKind, EvidenceStatus};
