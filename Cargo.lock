@@ -276,6 +276,12 @@ dependencies = [
 [[package]]
 name = "scirust-verify-numerics"
 version = "0.1.0"
+dependencies = [
+ "scirust-verify-model",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "scirust-verify-policy"
