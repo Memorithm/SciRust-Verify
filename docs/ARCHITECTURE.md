@@ -38,7 +38,7 @@ machine report / human report
 | `scirust-verify-cargo` | Generic Cargo provider: fmt/clippy/check/build/test/doc/deny/metadata checks with availability probes. Works without SciRust. |
 | `scirust-verify-determinism` | Cross-process fingerprinting engine incl. thread-count variation. |
 | `scirust-verify-report` | Report rendering from persisted documents only (never scrapes its own Markdown). |
-| `scirust-verify-scirust` | SciRust test-protocol adapter (reserved; ingestion of completed protocol bundles). |
+| `scirust-verify-scirust` | SciRust test-protocol adapter: parses protocol `summary.txt` bundles and maps gates to claims bijectively (`PASS→Verified`, `FAIL→Failed`, `SKIP→Skipped`). Wired into the CLI via `scirust-verify ingest-scirust <bundle>`. |
 | `scirust-verify-cli` | Thin binary: parse args → library calls → format output → exit code. |
 
 Dependency direction is strictly downward: model ← everything; report/store
@@ -143,6 +143,8 @@ without changing the domain model. See [THREAT_MODEL.md](THREAT_MODEL.md).
 
 ## Future integration points
 
+* **SciRust** — completed: `ingest-scirust` normalizes finished protocol
+  bundles into dossiers while attaching the original summary verbatim.
 * **SciCapsule** — a `.scicap` provider would appear as one more
   `VerificationProvider`; no format work is faked today.
 * **Forge** — candidates become Artifacts; Forge's own evaluation may be
