@@ -36,6 +36,18 @@ macro_rules! string_id {
                 f.write_str(&self.0)
             }
         }
+
+        impl From<&str> for $name {
+            fn from(value: &str) -> Self {
+                Self(value.to_owned())
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(value: String) -> Self {
+                Self(value)
+            }
+        }
     };
 }
 

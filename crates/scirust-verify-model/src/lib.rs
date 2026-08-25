@@ -33,17 +33,19 @@ pub mod digest;
 pub mod evidence;
 pub mod id;
 pub mod observation;
+pub mod provenance;
 pub mod scope;
 pub mod tolerance;
 pub mod verdict;
 
 pub use artifact::{Artifact, ArtifactKind, SourceIdentity};
-pub use check::{Check, CheckAction, CheckExecution, CheckStatus};
+pub use check::{Check, CheckAction, CheckExecution, CheckStatus, CommandTemplate};
 pub use claim::{Claim, ClaimEvaluation, ClaimKind};
 pub use digest::{canonical_json, Digest, DigestAlgorithm};
 pub use evidence::{Attachment, Evidence, EvidenceKind, EvidenceStatus};
 pub use id::{new_run_id_suffix, ArtifactId, CheckId, ClaimId, EvidenceId, RunId};
 pub use observation::{Observation, ObservedValue};
+pub use provenance::{GitProvenance, ProvenanceDocument, ProvenanceProbe};
 pub use scope::{
     CpuIdentity, EnvironmentSnapshot, GpuIdentity, HostIdentity, ToolchainIdentity,
     VerificationScope,

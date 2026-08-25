@@ -309,6 +309,13 @@ version = "0.1.0"
 [[package]]
 name = "scirust-verify-store"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "scirust-verify-model",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "serde"
