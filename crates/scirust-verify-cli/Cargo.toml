@@ -21,6 +21,7 @@ scirust-verify-cargo = { workspace = true }
 scirust-verify-determinism = { workspace = true }
 scirust-verify-scirust = { workspace = true }
 scirust-verify-signatures = { workspace = true }
+scirust-verify-artifacts = { workspace = true }
 scirust-verify-report = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
@@ -28,6 +29,7 @@ hex = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2"
+scirust-verify-artifacts = { workspace = true }
 
 [lints]
 workspace = true

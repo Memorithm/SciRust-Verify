@@ -99,7 +99,11 @@ scirust-verify doctor
 # 9. Ingest a completed SciRust test-protocol bundle into a dossier.
 scirust-verify ingest-scirust /path/to/protocol-run --project .
 
-# 10. Cryptographically sign a finalized dossier (Ed25519).
+# 10. Verify a SciCapsule bundle or ingest a Forge candidate envelope.
+scirust-verify verify-capsule /path/to/capsule-bundle
+scirust-verify ingest-forge /path/to/envelope.json
+
+# 11. Cryptographically sign a finalized dossier (Ed25519).
 scirust-verify keygen --output-dir ~/.scirust-keys
 scirust-verify sign <run-id> --key ~/.scirust-keys/signing.sk
 scirust-verify report <run-id> --check-integrity --verify-key ~/.scirust-keys/verify.pk

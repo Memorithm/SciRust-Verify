@@ -7,6 +7,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
 
 ### Added
 
+- SciCapsule v1 verification (`verify-capsule`): manifest validated against
+  the upstream `scirust-capsule-schema` contract (paths, hex digests,
+  ordering, entrypoint) and every payload re-hashed with byte-length checks;
+  entrypoint execution reported as UNSUPPORTED pending upstream semantics.
+- Forge candidate envelope ingestion (`ingest-forge`): wire format parsed,
+  canonical fingerprint recomputed per the upstream algorithm and compared;
+  trust scope explicitly limits claims to envelope consistency.
+- SPDX 2.3 SBOM generation (`[cargo] sbom = true`): packages derived from
+  resolved cargo metadata with strict NOASSERTION discipline for licenses,
+  copyrights and non-derivable download locations; registry entries carry
+  crates.io URLs and purl external references.
 - Detached Ed25519 dossier signatures: `scirust-verify keygen`, `sign`, and
   `report --check-integrity --verify-key`; signatures cover the exact
   `bundle.json` bytes (transitively every sealed file), key ids are pinned

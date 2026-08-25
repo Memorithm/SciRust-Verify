@@ -142,6 +142,9 @@ pub struct CargoSection {
     /// Build docs without warnings.
     #[serde(default)]
     pub doc: bool,
+    /// Emit an SPDX 2.3 SBOM from resolved dependency metadata.
+    #[serde(default)]
+    pub sbom: bool,
     /// cargo-deny policy: off | optional | required.
     #[serde(default)]
     pub deny: DenyMode,
@@ -157,6 +160,7 @@ impl Default for CargoSection {
             build: true,
             test: true,
             doc: false,
+            sbom: false,
             deny: DenyMode::Optional,
         }
     }

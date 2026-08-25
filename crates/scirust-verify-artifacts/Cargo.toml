@@ -1,6 +1,6 @@
 [package]
-name = "scirust-verify-cargo"
-description = "Cargo workspace discovery and verification provider for SciRust-Verify"
+name = "scirust-verify-artifacts"
+description = "Validation-first ingestion of ecosystem artifact formats: SciCapsule manifests and Forge candidate envelopes"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,13 +10,14 @@ authors.workspace = true
 
 [dependencies]
 scirust-verify-model = { workspace = true }
-scirust-verify-runner = { workspace = true }
-scirust-verify-core = { workspace = true }
-scirust-verify-numerics = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-chrono = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
 
 [lints]
 workspace = true
