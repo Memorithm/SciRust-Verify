@@ -755,7 +755,8 @@ fn aggregate_reports_claim_across_runs() {
     let ids = run_ids_in(&store.join(".scirust-verify/runs"));
     assert!(ids.len() >= 2);
 
-    // All-verified claim across both runs exits 0.
+    // Compatibility mode still answers whether all matching evaluations are VERIFIED,
+    // but it now verifies bundle integrity and reports scope facts too.
     let agg = cli()
         .args(["aggregate", "tests_pass", &ids[0], &ids[1], "--json"])
         .current_dir(&store)
@@ -771,6 +772,61 @@ fn aggregate_reports_claim_across_runs() {
         doc.get("all_verified").and_then(|v| v.as_bool()),
         Some(true)
     );
+    assert_eq!(
+        doc.pointer("/scope_assessment/source_consistency")
+            .and_then(|v| v.as_str()),
+        Some("verified")
+    );
+    assert_eq!(
+        doc.pointer("/scope_assessment/scope_certified")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    // One normalized platform is enough only when explicitly requested.
+    let scoped = cli()
+        .args([
+            "aggregate",
+            "tests_pass",
+            &ids[0],
+            &ids[1],
+            "--require-scope",
+            "--min-platforms",
+            "1",
+            "--json",
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        scoped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&scoped.stderr)
+    );
+
+    // Requiring two distinct platforms on two same-host runs is NOT_VERIFIED.
+    let multi = cli()
+        .args([
+            "aggregate",
+            "tests_pass",
+            &ids[0],
+            &ids[1],
+            "--require-scope",
+            "--min-platforms",
+            "2",
+            "--json",
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(multi.status.code(), Some(1));
+    let multi_doc: serde_json::Value = serde_json::from_slice(&multi.stdout).unwrap();
+    assert_eq!(
+        multi_doc
+            .pointer("/scope_assessment/scope_certified")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
 
     // A pattern matching nothing exits 1 (not-found contract).
     let miss = cli()
@@ -780,6 +836,22 @@ fn aggregate_reports_claim_across_runs() {
         .output()
         .unwrap();
     assert_eq!(miss.status.code(), Some(1));
+
+    // Aggregation may never consume a tampered dossier as trustworthy input.
+    let eval_path = store.join(format!(".scirust-verify/runs/{}/evaluations.json", ids[0]));
+    let original = std::fs::read_to_string(&eval_path).unwrap();
+    std::fs::write(&eval_path, original.replace("verified", "failed")).unwrap();
+    let corrupt = cli()
+        .args(["aggregate", "tests_pass", &ids[0], &ids[1], "--json"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(corrupt.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&corrupt.stderr).contains("integrity"),
+        "{}",
+        String::from_utf8_lossy(&corrupt.stderr)
+    );
 }
 
 fn run_ids_in(runs: &Path) -> Vec<String> {
