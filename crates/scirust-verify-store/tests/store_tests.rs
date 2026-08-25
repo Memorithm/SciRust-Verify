@@ -399,3 +399,60 @@ fn self_deriving_evidence_fails_finalize() {
     store.add_evidence(&ev, &payloads).unwrap();
     assert!(matches!(store.finalize(), Err(StoreError::Corrupt { .. })));
 }
+
+#[test]
+fn signature_file_is_the_only_permitted_unsealed_addition() {
+    use scirust_verify_signatures::{sign_manifest, SIGNATURE_FILE};
+    let root = tmp_root("sig-permit");
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    store.write_artifact(&sample_artifact()).unwrap();
+    store.write_claims(&[]).unwrap();
+    let canonical = scirust_verify_model::canonical_json(&Vec::<Check>::new()).unwrap();
+    store
+        .write_plan(
+            &[],
+            scirust_verify_model::Digest::sha256_hex(canonical.as_bytes()),
+        )
+        .unwrap();
+    store.finalize().unwrap();
+
+    // Foreign unsealed files remain rejected...
+    std::fs::write(store.path().join("smuggled.txt"), b"x").unwrap();
+    let reopened = runs.open(store.run_id().as_str()).unwrap();
+    assert!(matches!(
+        reopened.verify_integrity(),
+        Err(StoreError::Corrupt { .. })
+    ));
+    std::fs::remove_file(store.path().join("smuggled.txt")).unwrap();
+
+    // ...but a valid detached signature is accepted (structurally).
+    let manifest_bytes = std::fs::read(store.path().join("bundle.json")).unwrap();
+    let key = std::env::temp_dir().join(format!("sk-{}.hex", std::process::id()));
+    let (seed, _) = scirust_verify_signatures::generate_keypair().unwrap();
+    std::fs::write(&key, hex::encode(&seed)).unwrap();
+    let signed = sign_manifest(&key, &manifest_bytes).unwrap();
+    store.write_signature_document(&signed).unwrap();
+    assert!(store.path().join(SIGNATURE_FILE).exists());
+
+    let reopened = runs.open(store.run_id().as_str()).unwrap();
+    assert!(reopened.verify_integrity().is_ok());
+    let doc = reopened.read_signature_document().unwrap().expect("signed");
+    assert_eq!(doc.algorithm, "ed25519");
+}
+
+#[test]
+fn signing_requires_a_finalized_run() {
+    use scirust_verify_signatures::{generate_keypair, sign_manifest};
+    let root = tmp_root("sig-unfinalized");
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    let key = std::env::temp_dir().join(format!("sk2-{}.hex", std::process::id()));
+    let (seed, _) = generate_keypair().unwrap();
+    std::fs::write(&key, hex::encode(&seed)).unwrap();
+    let signed = sign_manifest(&key, b"{}").unwrap();
+    assert!(matches!(
+        store.write_signature_document(&signed),
+        Err(StoreError::Corrupt { .. })
+    ));
+}

@@ -100,6 +100,13 @@ stored observation payload so dossiers show *which* reference produced each
 expected value. Non-finite expected/observed values are stored as their
 canonical strings (`"NaN"`, `"inf"`, `"-inf"`) — never JSON `null`.
 
+### Lifecycle notes for regenerable documents
+
+`report.json` / `report.md` / `evaluations.json` are generated during the
+finalizing phase — immediately before `bundle.json` is written. Their
+recorded run `state` therefore reflects the pre-seal instant; the presence
+of a valid `bundle.json` is the authoritative indicator of finality.
+
 ### Attachments
 
 Referenced by relative path inside the run directory (never absolute, never
@@ -119,6 +126,33 @@ verifies existence, size and digest of every referenced attachment.
 
 Corruption examples detected: modified evidence text, deleted log payload,
 swapped artifact name, injected files, duplicate ids, broken references.
+
+## Signatures (`bundle.sig`)
+
+After finalization a run may be signed with an Ed25519 secret seed:
+
+```json
+{
+  "schema_version": 1,
+  "algorithm": "ed25519",
+  "key_id": "<16 hex chars of SHA-256(public key)>",
+  "public_key": "<64 hex chars>",
+  "signature": "<128 hex chars>",
+  "signed_document": "bundle.json",
+  "created_at_utc": "...",
+  "tool_version": "..."
+}
+```
+
+Rules:
+
+1. The signature covers the raw `bundle.json` bytes, so it transitively
+   covers every sealed file digest.
+2. It is written after sealing and is the ONLY file permitted to exist
+   unsealed inside a run directory; any other addition is corruption.
+3. Verification requires pinning the expected `key_id` out-of-band; the
+   embedded public key only makes the file self-describing.
+4. Re-signing replaces the previous signature only with explicit `--force`.
 
 ## Canonicalization contract
 

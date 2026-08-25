@@ -686,10 +686,19 @@ impl RunStore {
             }
         }
         // Every non-manifest file must be sealed too (detect additions).
+        // Exactly one addition is permitted by design: `bundle.sig`, the
+        // detached signature written after sealing. It is validated
+        // structurally here; cryptographic verification requires a key and
+        // happens through the signatures API.
         let mut present = BTreeMap::new();
         collect_files(&self.run_dir, self.run_dir.clone(), &mut present)?;
         present.remove("bundle.json");
+        let mut signature_seen = false;
         for rel in present.keys() {
+            if rel == scirust_verify_signatures::SIGNATURE_FILE {
+                signature_seen = true;
+                continue;
+            }
             if !manifest.files.contains_key(rel) {
                 return Err(StoreError::corrupt(
                     self.run_id.as_str(),
@@ -697,7 +706,60 @@ impl RunStore {
                 ));
             }
         }
+        if signature_seen {
+            self.read_signature_document()?;
+        } else if let Some(expected) = manifest
+            .files
+            .get(scirust_verify_signatures::SIGNATURE_FILE)
+        {
+            // A sealed signature is impossible by construction (it covers
+            // the manifest that would have to contain its own digest);
+            // treat it as corruption.
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!(
+                    "`{}` must never appear inside the seal list",
+                    expected.len()
+                ),
+            ));
+        }
         Ok(manifest.files.len())
+    }
+
+    /// Loads and structurally validates `bundle.sig` when present.
+    ///
+    /// Returns `Ok(None)` for unsigned bundles. Cryptographic verification
+    /// against a pinned key lives in `scirust-verify-signatures`.
+    pub fn read_signature_document(
+        &self,
+    ) -> Result<Option<scirust_verify_signatures::SignatureDocument>, StoreError> {
+        let path = self.run_dir.join(scirust_verify_signatures::SIGNATURE_FILE);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path).map_err(|e| io_err(path.clone(), e))?;
+        let doc = scirust_verify_signatures::SignatureDocument::parse(&bytes).map_err(|e| {
+            StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("invalid {}: {e}", scirust_verify_signatures::SIGNATURE_FILE),
+            )
+        })?;
+        Ok(Some(doc))
+    }
+
+    /// Writes the detached signature document atomically.
+    pub fn write_signature_document(&self, bytes: &[u8]) -> Result<(), StoreError> {
+        let run_doc = self.read_run_document()?;
+        if run_doc.state != RunState::Finalized {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                "only finalized runs can be signed",
+            ));
+        }
+        let dest = self.run_dir.join(sanitize_attachment_path(
+            scirust_verify_signatures::SIGNATURE_FILE,
+        )?);
+        atomic_write(&dest, bytes).map_err(|e| io_err(dest, e))
     }
 
     fn write_json<T: Serialize>(&self, rel: &str, value: &T) -> Result<(), StoreError> {

@@ -1,0 +1,23 @@
+[package]
+name = "scirust-verify-signatures"
+description = "Ed25519 signing and verification for SciRust-Verify evidence bundles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+getrandom = "0.2"
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+scirust-verify-model = { workspace = true }
+
+[lints]
+workspace = true

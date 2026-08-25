@@ -7,6 +7,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
 
 ### Added
 
+- Detached Ed25519 dossier signatures: `scirust-verify keygen`, `sign`, and
+  `report --check-integrity --verify-key`; signatures cover the exact
+  `bundle.json` bytes (transitively every sealed file), key ids are pinned
+  out-of-band, `bundle.sig` is the sole permitted unsealed addition inside a
+  run, and unsigned bundles are always reported as UNSIGNED.
+
 - Cargo workspace with eleven crates: model, runner, numerics, store, policy,
   core, cargo provider, determinism engine, report rendering, SciRust adapter
   slot and CLI binary `scirust-verify`.

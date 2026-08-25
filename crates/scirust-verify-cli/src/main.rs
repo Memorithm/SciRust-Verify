@@ -24,6 +24,7 @@ use scirust_verify_core::providers::{
 };
 use scirust_verify_determinism::DeterminismProvider;
 use scirust_verify_model::TOOL_IDENTITY;
+use scirust_verify_signatures as sigs;
 use scirust_verify_store::RunsRoot;
 
 mod scirust_ingest;
@@ -97,6 +98,9 @@ enum Command {
         /// Verify bundle integrity before printing.
         #[arg(long)]
         check_integrity: bool,
+        /// Public key file for verifying a detached bundle signature.
+        #[arg(long)]
+        verify_key: Option<PathBuf>,
     },
     /// Re-execute a previous run as a NEW run linked to the original.
     Replay {
@@ -125,6 +129,26 @@ enum Command {
         /// Project root containing `.scirust-verify/runs`.
         #[arg(long)]
         project: Option<PathBuf>,
+    },
+    /// Generate an Ed25519 signing keypair for dossier signatures.
+    Keygen {
+        /// Output directory receiving `signing.sk` and `verify.pk`.
+        #[arg(long)]
+        output_dir: PathBuf,
+        /// Overwrite existing key files.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Sign a finalized run's integrity manifest (Ed25519 over bundle.json).
+    Sign {
+        /// Run id to sign.
+        run: String,
+        /// Path to the 32-byte hex secret seed file.
+        #[arg(long)]
+        key: PathBuf,
+        /// Replace an existing signature.
+        #[arg(long)]
+        force: bool,
     },
     /// Ingest a completed SciRust test-protocol evidence bundle into a new dossier run.
     IngestScirust {
@@ -176,7 +200,8 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             json,
             markdown,
             check_integrity,
-        } => report(&run, json, markdown, check_integrity),
+            verify_key,
+        } => report(&run, json, markdown, check_integrity, verify_key.as_deref()),
         Command::Replay { run, strict } => replay(&run, strict, cli.json),
         Command::Diff { run_a, run_b } => diff(&run_a, &run_b),
         Command::Aggregate {
@@ -190,6 +215,8 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             };
             aggregate(&claim, &runs, &root, cli.json)
         }
+        Command::Keygen { output_dir, force } => keygen(&output_dir, force),
+        Command::Sign { run, key, force } => sign(&run, &key, force),
         Command::Doctor => doctor(),
         Command::Schema => schema(),
         Command::IngestScirust {
@@ -647,6 +674,7 @@ fn report(
     json: bool,
     markdown: bool,
     check_integrity: bool,
+    verify_key: Option<&Path>,
 ) -> Result<ExitCode, CliError> {
     let (_root, store) = open_run(run)?;
     let doc = store
@@ -657,6 +685,19 @@ fn report(
             Ok(n) => println!("integrity OK ({n} sealed files)"),
             Err(e) => {
                 eprintln!("INTEGRITY FAILURE: {e}");
+                return Ok(ExitCode::from(1));
+            }
+        }
+        match signature_status(&store, verify_key)? {
+            SignatureStatus::Unsigned => println!("signature: UNSIGNED"),
+            SignatureStatus::SignedUnverified(key_id) => {
+                println!("signature: PRESENT (key_id={key_id}) — supply --verify-key to cryptographically verify");
+            }
+            SignatureStatus::Verified(key_id) => {
+                println!("signature: VALID (key_id={key_id})");
+            }
+            SignatureStatus::Invalid(reason) => {
+                eprintln!("SIGNATURE FAILURE: {reason}");
                 return Ok(ExitCode::from(1));
             }
         }
@@ -1124,6 +1165,116 @@ fn ingest_scirust(
             ExitCode::from(1)
         },
     )
+}
+
+enum SignatureStatus {
+    Unsigned,
+    SignedUnverified(String),
+    Verified(String),
+    Invalid(String),
+}
+
+fn signature_status(
+    store: &scirust_verify_store::RunStore,
+    verify_key: Option<&Path>,
+) -> Result<SignatureStatus, CliError> {
+    use scirust_verify_signatures::SIGNED_DOCUMENT;
+    let Some(doc) = store
+        .read_signature_document()
+        .map_err(|e| CliError::usage(e.to_string()))?
+    else {
+        return Ok(SignatureStatus::Unsigned);
+    };
+    let manifest_bytes = std::fs::read(store.path().join(SIGNED_DOCUMENT))
+        .map_err(|e| CliError::usage(format!("read {}: {e}", SIGNED_DOCUMENT)))?;
+
+    match verify_key {
+        None => Ok(SignatureStatus::SignedUnverified(doc.key_id)),
+        Some(pk_path) => {
+            // Trust semantics: the pinned id comes from YOUR key file;
+            // the embedded public key is only self-description.
+            let expected_id =
+                sigs::load_public_key(pk_path).map_err(|e| CliError::usage(e.to_string()))?;
+            let expected_id =
+                sigs::key_id(&expected_id).map_err(|e| CliError::usage(e.to_string()))?;
+            match doc.verify_pinned(&manifest_bytes, &expected_id) {
+                Ok(()) => Ok(SignatureStatus::Verified(doc.key_id)),
+                Err(_) => Ok(SignatureStatus::Invalid(format!(
+                    "signature does not verify against key id {expected_id}"
+                ))),
+            }
+        }
+    }
+}
+
+fn keygen(output_dir: &Path, force: bool) -> Result<ExitCode, CliError> {
+    let sk_path = output_dir.join("signing.sk");
+    let pk_path = output_dir.join("verify.pk");
+    if (sk_path.exists() || pk_path.exists()) && !force {
+        return Err(CliError::usage(format!(
+            "{} or {} exists; pass --force to overwrite",
+            sk_path.display(),
+            pk_path.display()
+        )));
+    }
+    let (seed, public) = sigs::generate_keypair().map_err(|e| CliError::usage(e.to_string()))?;
+    std::fs::create_dir_all(output_dir).map_err(|e| CliError::usage(e.to_string()))?;
+    write_secret_file(&sk_path, &hex::encode(&seed))?;
+    std::fs::write(&pk_path, format!("{public}\n"))
+        .map_err(|e| CliError::usage(format!("write {}: {e}", pk_path.display())))?;
+    println!("secret key:   {} (KEEP PRIVATE)", sk_path.display());
+    println!("public key:   {}", pk_path.display());
+    println!(
+        "key id:       {} (pin this value out-of-band)",
+        sigs::key_id(&public).map_err(|e| CliError::usage(e.to_string()))?
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(unix)]
+fn write_secret_file(path: &Path, contents: &str) -> Result<(), CliError> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let mut f = std::fs::File::create(path)
+        .map_err(|e| CliError::usage(format!("create {}: {e}", path.display())))?;
+    f.write_all(contents.as_bytes())
+        .and_then(|_| f.write_all(b"\n"))
+        .and_then(|_| f.sync_all())
+        .map_err(|e| CliError::usage(format!("write {}: {e}", path.display())))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| CliError::usage(format!("chmod {}: {e}", path.display())))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_secret_file(path: &Path, contents: &str) -> Result<(), CliError> {
+    std::fs::write(path, format!("{contents}\n"))
+        .map_err(|e| CliError::usage(format!("write {}: {e}", path.display())))
+}
+
+fn sign(run: &str, key: &Path, force: bool) -> Result<ExitCode, CliError> {
+    let (_root, store) = open_run(run)?;
+    if !force && store.path().join(sigs::SIGNATURE_FILE).exists() {
+        return Err(CliError::usage(
+            "run already carries a signature; pass --force to replace it",
+        ));
+    }
+    let manifest_bytes = std::fs::read(store.path().join(sigs::SIGNED_DOCUMENT))
+        .map_err(|e| CliError::usage(format!("read {}: {e}", sigs::SIGNED_DOCUMENT)))?;
+    let signed =
+        sigs::sign_manifest(key, &manifest_bytes).map_err(|e| CliError::usage(e.to_string()))?;
+    store
+        .write_signature_document(&signed)
+        .map_err(|e| CliError::usage(e.to_string()))?;
+
+    // Parse back to display stable identity facts.
+    let doc = store
+        .read_signature_document()
+        .map_err(|e| CliError::usage(e.to_string()))?
+        .expect("just written");
+    println!("signed {} with {}", run, doc.key_id);
+    println!("verify with: scirust-verify report {run} --check-integrity --verify-key <verify.pk>");
+    Ok(ExitCode::SUCCESS)
 }
 
 fn doctor() -> Result<ExitCode, CliError> {

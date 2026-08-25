@@ -99,9 +99,21 @@ scirust-verify doctor
 # 9. Ingest a completed SciRust test-protocol bundle into a dossier.
 scirust-verify ingest-scirust /path/to/protocol-run --project .
 
-# 10. Persisted document catalog.
+# 10. Cryptographically sign a finalized dossier (Ed25519).
+scirust-verify keygen --output-dir ~/.scirust-keys
+scirust-verify sign <run-id> --key ~/.scirust-keys/signing.sk
+scirust-verify report <run-id> --check-integrity --verify-key ~/.scirust-keys/verify.pk
+
+# 11. Persisted document catalog.
 scirust-verify schema
 ```
+
+**Signature trust semantics:** `bundle.sig` covers the exact bytes of
+`bundle.json` (which seals every other file). Verification succeeds only if
+the embedded key's id matches the key id you pinned out-of-band — an
+attacker re-signing with their own key fails against your pin. Unsigned
+bundles are always labeled `UNSIGNED`; a SHA-256 digest is never called a
+signature.
 
 Exit codes: `0` pass/pass-with-gaps · `1` verification not established or
 requested run missing · `2` invalid usage/configuration (bad paths, bad

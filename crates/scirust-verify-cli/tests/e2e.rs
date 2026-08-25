@@ -793,6 +793,138 @@ fn run_ids_in(runs: &Path) -> Vec<String> {
     ids
 }
 
+#[test]
+fn signature_lifecycle_sign_verify_and_tamper() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let store = tempfile_dir("signed-store");
+
+    // 1. Produce a finalized run in an isolated store.
+    let out = cli()
+        .args([
+            "verify",
+            project.to_str().unwrap(),
+            "--output",
+            store.join(".scirust-verify").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let run_id = latest_run_in(&store.join(".scirust-verify/runs"));
+
+    // 2. Unsigned status before signing.
+    let out = cli()
+        .args(["report", &run_id, "--check-integrity"])
+        .current_dir(&store)
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("UNSIGNED"));
+
+    // 3. Keygen.
+    let keys = tempfile_dir("keys");
+    let out = cli()
+        .args(["keygen", "--output-dir", keys.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(keys.join("signing.sk").is_file());
+    assert!(keys.join("verify.pk").is_file());
+
+    // 4. Sign the run.
+    let out = cli()
+        .args([
+            "sign",
+            &run_id,
+            "--key",
+            keys.join("signing.sk").to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(store
+        .join(format!(".scirust-verify/runs/{run_id}/bundle.sig"))
+        .is_file());
+
+    // 5. Re-signing requires --force.
+    let out = cli()
+        .args([
+            "sign",
+            &run_id,
+            "--key",
+            keys.join("signing.sk").to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+
+    // 6. Verification with the right key succeeds.
+    let out = cli()
+        .args([
+            "report",
+            &run_id,
+            "--check-integrity",
+            "--verify-key",
+            keys.join("verify.pk").to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("VALID"), "{stdout}");
+
+    // 7. Tampering with bundle.json only is invisible to digests (the
+    // manifest covers other files), but breaks the signature.
+    let run_dir = store.join(format!(".scirust-verify/runs/{run_id}"));
+    let manifest_path = run_dir.join("bundle.json");
+    let original = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(
+        &manifest_path,
+        original.replace("scirust-verify", "evil-verify"),
+    )
+    .unwrap();
+
+    // Without a key: digest checks pass (honest limitation).
+    let out = cli()
+        .args(["report", &run_id, "--check-integrity"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    // With the pinned key: signature failure, exit 1.
+    let out = cli()
+        .args([
+            "report",
+            &run_id,
+            "--check-integrity",
+            "--verify-key",
+            keys.join("verify.pk").to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("SIGNATURE FAILURE"));
+}
+
 fn evidence_files(run_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let dir = run_dir.join("evidence");

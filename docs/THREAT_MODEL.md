@@ -82,13 +82,24 @@ node_modules) are skipped.
 * readers verify all digests and reject missing/unsealed files;
 * plan digest detects plan mutation after execution;
 * attachments carry size+digest verified at finalize and at load;
-* sealed runs refuse store-level mutation.
+* sealed runs refuse store-level mutation;
+* **detached Ed25519 signatures** (`scirust-verify keygen` / `sign`, verified
+  via `report --check-integrity --verify-key`): the signature covers the
+  exact `bundle.json` bytes, so it transitively covers every sealed file.
+  Modifying any content breaks its digest; rewriting the manifest itself
+  breaks the signature.
 
-*Residual:* anyone with filesystem write access can rebuild the entire bundle
-including `bundle.json`. Sealing detects *accidents and partial tampering*;
-it is not cryptographic authorship. Signed dossiers (with established Rust
-crypto libraries, identified algorithms and key management) are a planned
-extension; unsigned bundles are never labeled signed today.
+*Trust semantics (important):*
+* the embedded public key in `bundle.sig` is *self-description*, not trust —
+  verification pins the expected **key id** (16 hex chars of
+  SHA-256(public key)) distributed out-of-band;
+* an attacker re-signing with their own key produces a cryptographically
+  valid signature that fails only against your pinned key id;
+* unsigned bundles are reported as `UNSIGNED`; signatures are never claimed
+  for unsigned bundles and hashes are never called signatures.
+
+*Residual:* key management is the user's responsibility (seed files, chmod
+600 on Unix, out-of-band pinning). This is not PKI.
 
 ### Forged provenance
 
@@ -124,7 +135,8 @@ Reviewing a manifest before running it is *your* responsibility.
 ## Explicit non-goals for V0.1
 
 * No sandboxing of any kind.
-* No cryptographic signatures on dossiers.
+* No full PKI: dossier signing exists (Ed25519) but key distribution/pinning
+  remains manual and out-of-band by design.
 * No network-isolation guarantees for executed commands.
 * No formal proof artifacts (all current evidence is empirical).
 
