@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use scirust_verify_model::provenance::ProvenanceDocument;
 use scirust_verify_model::{
-    canonical_json, Artifact, ArtifactId, ArtifactKind, Claim, ClaimKind, Digest, DossierVerdict,
-    RequirementLevel, RunId, VerificationScope, SCHEMA_VERSION, TOOL_IDENTITY,
+    canonical_json, Artifact, ArtifactId, ArtifactKind, Check, Claim, ClaimKind, Digest,
+    DossierVerdict, RequirementLevel, RunId, VerificationScope, SCHEMA_VERSION, TOOL_IDENTITY,
 };
 use scirust_verify_policy::Profile;
 use scirust_verify_store::{RunState, RunsRoot, StoreError};
@@ -91,12 +91,16 @@ pub struct VerifyOutcome {
 
 /// Effective settings after precedence resolution (used by providers).
 #[derive(Debug, Clone)]
-pub(crate) struct EffectiveSettings {
-    #[allow(dead_code)]
+pub struct EffectiveSettings {
+    /// Resolved policy profile.
     pub profile: Profile,
+    /// Default check timeout.
     pub timeout: Duration,
+    /// Stdout capture limit in bytes.
     pub stdout_limit: u64,
+    /// Stderr capture limit in bytes.
     pub stderr_limit: u64,
+    /// Resolved claim requirement levels (slug => level).
     pub claim_levels: BTreeMap<String, RequirementLevel>,
 }
 
@@ -121,7 +125,7 @@ fn default_claim_levels() -> BTreeMap<String, RequirementLevel> {
     ])
 }
 
-fn resolve_settings(
+pub(crate) fn resolve_settings(
     manifest: &Manifest,
     opts: &VerifyOptions,
 ) -> Result<EffectiveSettings, PipelineError> {
@@ -174,11 +178,36 @@ fn resolve_settings(
     })
 }
 
-/// Runs the full pipeline. See module docs.
-pub fn run_verify(
+/// Everything `plan` and `verify` share: discovery, settings, providers'
+/// checks, claims, plan digest.
+pub struct Prepared {
+    /// Discovery results.
+    pub ctx: DiscoveryContext,
+    /// Loaded (or default) manifest.
+    pub manifest: Manifest,
+    /// Effective settings after precedence resolution.
+    pub settings: EffectiveSettings,
+    /// Deterministic check list (sorted by id).
+    pub checks: Vec<Check>,
+    /// Claims derived from check links.
+    pub claims: Vec<Claim>,
+    /// Map from check id to claim ids.
+    pub check_claims: BTreeMap<String, Vec<String>>,
+    /// Providers that detected the project.
+    pub detected_notes: Vec<(String, String)>,
+    /// Artifact id used for claims.
+    pub artifact_id: ArtifactId,
+    /// SHA-256 over canonical JSON of `checks`.
+    pub plan_digest: Digest,
+    /// Environment snapshot captured at prepare time.
+    pub env_snapshot: scirust_verify_model::EnvironmentSnapshot,
+}
+
+/// Discovery + manifest + planning without any execution.
+pub fn prepare(
     registry: &ProviderRegistry,
     opts: &VerifyOptions,
-) -> Result<VerifyOutcome, PipelineError> {
+) -> Result<Prepared, PipelineError> {
     // 1. Discovery.
     let ctx = DiscoveryContext::discover(&opts.project_root)?;
 
@@ -194,18 +223,9 @@ pub fn run_verify(
 
     let mut settings = resolve_settings(manifest_ref, opts)?;
 
-    // 3. Provenance + environment.
+    // 3. Provenance collection (environment snapshot happens in prepare()).
     let provenance_doc = crate::provenance::collect_provenance(&ctx.project_root);
-    let env_snapshot = {
-        let mut snap =
-            crate::provenance::collect_environment(&ctx.project_root, opts.target.as_deref());
-        snap.toolchain.target_triple = opts
-            .target
-            .clone()
-            .or_else(|| snap.toolchain.host_triple.clone());
-        scirust_verify_core_provenance_hack::record_rustflags(&mut snap);
-        snap
-    };
+    let _ = &provenance_doc;
 
     // 4. Plan.
     let artifact_id = ArtifactId::new(manifest_ref.artifact.name.clone().unwrap_or_else(|| {
@@ -283,10 +303,56 @@ pub fn run_verify(
     }
 
     // Deterministic plan order + digest over the canonical form.
+    let mut checks = checks;
     checks.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
     let plan_canonical = canonical_json(&checks)
         .map_err(|e| PipelineError::Report(format!("canonicalization failed: {e}")))?;
     let plan_digest = Digest::sha256_hex(plan_canonical.as_bytes());
+
+    // Provenance/environment snapshot for scope records.
+    let env_snapshot = {
+        let mut snap =
+            crate::provenance::collect_environment(&ctx.project_root, opts.target.as_deref());
+        snap.toolchain.target_triple = opts
+            .target
+            .clone()
+            .or_else(|| snap.toolchain.host_triple.clone());
+        crate::provenance::record_rustflags(&mut snap);
+        snap
+    };
+
+    Ok(Prepared {
+        ctx,
+        manifest: manifest_ref.clone(),
+        settings,
+        checks,
+        claims,
+        check_claims,
+        detected_notes,
+        artifact_id,
+        plan_digest,
+        env_snapshot,
+    })
+}
+
+/// Runs the full pipeline. See module docs.
+pub fn run_verify(
+    registry: &ProviderRegistry,
+    opts: &VerifyOptions,
+) -> Result<VerifyOutcome, PipelineError> {
+    let prepared = prepare(registry, opts)?;
+    let Prepared {
+        ctx,
+        manifest: manifest_ref,
+        settings,
+        checks,
+        claims,
+        check_claims,
+        detected_notes,
+        artifact_id,
+        plan_digest,
+        env_snapshot,
+    } = prepared;
 
     // 5. Create run and persist pre-execution documents.
     let runs_root_dir = opts
@@ -301,7 +367,7 @@ pub fn run_verify(
     if source.commit.is_none() && source.tree_digest.is_none() {
         source.tree_digest = Some(crate::tree_digest::tree_digest(&ctx.project_root)?);
     }
-    let mut provenance_final = provenance_doc;
+    let mut provenance_final = crate::provenance::collect_provenance(&ctx.project_root);
     if provenance_final.git.is_none() {
         provenance_final.tree_digest = source.tree_digest.clone();
     }
@@ -531,12 +597,5 @@ impl CheckSink for StoreSink<'_> {
     ) -> Result<(), PipelineFailure> {
         self.store.add_evidence(&evidence, attachments)?;
         Ok(())
-    }
-}
-
-// The pipeline needs rustflags recording without exposing provenance internals.
-mod scirust_verify_core_provenance_hack {
-    pub(super) fn record_rustflags(snap: &mut scirust_verify_model::EnvironmentSnapshot) {
-        crate::provenance::record_rustflags(snap);
     }
 }
