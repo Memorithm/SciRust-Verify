@@ -99,8 +99,11 @@ pub(crate) fn verify_signature(
     })?;
     let public = read_public_key(&public_key).map_err(|e| map_signature_error(e, true))?;
     let signatures_root = root.join(".scirust-verify/signatures");
-    let signature =
-        signature.unwrap_or_else(|| signature_path(&signatures_root, run, &public.key_id));
+    let signature = match signature {
+        Some(path) => path,
+        None => signature_path(&signatures_root, run, &public.key_id)
+            .map_err(|e| map_signature_error(e, true))?,
+    };
     if !signature.is_file() {
         return Err(CliError::not_found(format!(
             "no detached signature for run `{run}` and key `{}` at {}",
@@ -160,7 +163,8 @@ fn map_signature_error(error: SignatureError, verification: bool) -> CliError {
             SignatureError::Io { .. } | SignatureError::Json { .. } => 3,
             SignatureError::VerificationFailed
             | SignatureError::BundleDigestMismatch { .. }
-            | SignatureError::PublicKeyMismatch { .. } => 1,
+            | SignatureError::PublicKeyMismatch { .. }
+            | SignatureError::InvalidRunId(_) => 1,
             SignatureError::InvalidKey(_)
             | SignatureError::InvalidSignatureDocument(_)
             | SignatureError::AlreadyExists(_)

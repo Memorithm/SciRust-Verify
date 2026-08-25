@@ -141,6 +141,9 @@ pub enum SignatureError {
     /// Ed25519 verification rejected the signature.
     #[error("Ed25519 signature verification failed")]
     VerificationFailed,
+    /// Run id is not a portable, single filesystem component.
+    #[error("unsafe run id `{0}`")]
+    InvalidRunId(String),
 }
 
 impl SignatureError {
@@ -161,6 +164,7 @@ impl SignatureError {
                 | Self::PublicKeyMismatch { .. }
                 | Self::BundleDigestMismatch { .. }
                 | Self::VerificationFailed
+                | Self::InvalidRunId(_)
         )
     }
 }
@@ -225,6 +229,7 @@ pub fn sign_bundle(
     signatures_root: &Path,
     force: bool,
 ) -> Result<(SignatureDocument, PathBuf), SignatureError> {
+    validate_run_id(run_id)?;
     let signing_key = read_private_key(private_key_path)?;
     let public = public_document(&signing_key.verifying_key());
     let bundle = fs::read(bundle_path).map_err(|e| SignatureError::io(bundle_path, e))?;
@@ -246,15 +251,23 @@ pub fn sign_bundle(
         signed_at_utc: chrono_now(),
         signed_by_tool: TOOL_IDENTITY.to_owned(),
     };
-    let path = signature_path(signatures_root, run_id, &doc.key_id);
+    let path = signature_path(signatures_root, run_id, &doc.key_id)?;
     preflight_output(&path, force)?;
     write_public_json(&path, &doc, force)?;
     Ok((doc, path))
 }
 
 /// Compute the canonical detached-signature path for a run and key id.
-pub fn signature_path(signatures_root: &Path, run_id: &str, key_id: &str) -> PathBuf {
-    signatures_root.join(run_id).join(format!("{key_id}.json"))
+///
+/// The run id must be a portable single path component; traversal and platform
+/// separator forms are rejected rather than normalized.
+pub fn signature_path(
+    signatures_root: &Path,
+    run_id: &str,
+    key_id: &str,
+) -> Result<PathBuf, SignatureError> {
+    validate_run_id(run_id)?;
+    Ok(signatures_root.join(run_id).join(format!("{key_id}.json")))
 }
 
 /// Verify a detached signature against an explicit trusted-by-caller public key.
@@ -268,6 +281,7 @@ pub fn verify_bundle_signature(
     signature_path: &Path,
     public_key_path: &Path,
 ) -> Result<SignatureVerification, SignatureError> {
+    validate_run_id(run_id)?;
     let bundle = fs::read(bundle_path).map_err(|e| SignatureError::io(bundle_path, e))?;
     let signature_bytes =
         fs::read(signature_path).map_err(|e| SignatureError::io(signature_path, e))?;
@@ -416,6 +430,20 @@ fn decode_fixed<const N: usize>(value: &str, what: &str) -> Result<[u8; N], Sign
     bytes
         .try_into()
         .map_err(|_| SignatureError::InvalidKey(format!("{what} must contain exactly {N} bytes")))
+}
+
+fn validate_run_id(run_id: &str) -> Result<(), SignatureError> {
+    let valid = !run_id.is_empty()
+        && run_id.len() <= 128
+        && run_id != "."
+        && run_id != ".."
+        && run_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if !valid {
+        return Err(SignatureError::InvalidRunId(run_id.to_owned()));
+    }
+    Ok(())
 }
 
 fn signature_message(run_id: &str, bundle: &[u8]) -> Vec<u8> {
@@ -593,6 +621,33 @@ mod tests {
         let (_, path) =
             sign_bundle("run-a", &bundle, &private, &dir.join("signatures"), false).unwrap();
         assert!(verify_bundle_signature("run-b", &bundle, &path, &public).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unsafe_run_ids_are_rejected_before_path_construction() {
+        let dir = temp_dir("unsafe-run-id");
+        let private = dir.join("private.json");
+        let public = dir.join("public.json");
+        let bundle = dir.join("bundle.json");
+        fs::write(&bundle, b"{}\n").unwrap();
+        generate_keypair(&private, &public, false).unwrap();
+        for bad in [
+            "../escape",
+            "..\\escape",
+            "/absolute",
+            "run/child",
+            "run:drive",
+        ] {
+            assert!(matches!(
+                sign_bundle(bad, &bundle, &private, &dir.join("signatures"), false),
+                Err(SignatureError::InvalidRunId(_))
+            ));
+            assert!(matches!(
+                signature_path(&dir.join("signatures"), bad, "ed25519-deadbeef"),
+                Err(SignatureError::InvalidRunId(_))
+            ));
+        }
         let _ = fs::remove_dir_all(dir);
     }
 

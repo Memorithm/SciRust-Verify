@@ -166,6 +166,9 @@ pub enum StoreError {
     /// The requested run does not exist.
     #[error("run `{0}` not found")]
     NotFound(String),
+    /// Run id is not a portable, single filesystem component.
+    #[error("unsafe run id `{0}`: expected 1-128 ASCII letters, digits, '.', '_' or '-'")]
+    InvalidRunId(String),
 }
 
 impl StoreError {
@@ -208,6 +211,7 @@ impl RunsRoot {
     /// Creates a run with an explicit identifier (used by replay to keep the
     /// freshly generated id).
     pub fn create_run_with_id(&self, run_id: RunId) -> Result<RunStore, StoreError> {
+        validate_run_id(run_id.as_str())?;
         let run_dir = self.0.join(run_id.as_str());
         if run_dir.exists() {
             return Err(StoreError::Corrupt {
@@ -235,6 +239,7 @@ impl RunsRoot {
 
     /// Opens an existing run by id.
     pub fn open(&self, run_id: &str) -> Result<RunStore, StoreError> {
+        validate_run_id(run_id)?;
         let run_dir = self.0.join(run_id);
         if !run_dir.is_dir() {
             return Err(StoreError::NotFound(run_id.to_owned()));
@@ -755,6 +760,20 @@ fn ensure_unique<'a>(items: impl Iterator<Item = &'a str>, what: &str) -> Result
                 format!("duplicate {what} id `{item}`"),
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_run_id(run_id: &str) -> Result<(), StoreError> {
+    let valid = !run_id.is_empty()
+        && run_id.len() <= 128
+        && run_id != "."
+        && run_id != ".."
+        && run_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if !valid {
+        return Err(StoreError::InvalidRunId(run_id.to_owned()));
     }
     Ok(())
 }
