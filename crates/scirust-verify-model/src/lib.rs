@@ -38,7 +38,7 @@ pub mod scope;
 pub mod tolerance;
 pub mod verdict;
 
-pub use artifact::{Artifact, ArtifactKind, SourceIdentity};
+pub use artifact::{Artifact, ArtifactKind, DirtyState, SourceIdentity};
 pub use check::{Check, CheckAction, CheckExecution, CheckStatus, CommandTemplate};
 pub use claim::{Claim, ClaimEvaluation, ClaimKind};
 pub use digest::{canonical_json, Digest, DigestAlgorithm};
@@ -51,7 +51,9 @@ pub use scope::{
     VerificationScope,
 };
 pub use tolerance::Tolerance;
-pub use verdict::{aggregate_dossier_verdict, DossierVerdict, RequirementLevel, Verdict};
+pub use verdict::{
+    aggregate_dossier_verdict, DossierVerdict, GatingItem, RequirementLevel, Verdict,
+};
 
 /// Schema version of every persisted top-level document produced by this
 /// version of SciRust-Verify. Readers must reject documents whose version is
