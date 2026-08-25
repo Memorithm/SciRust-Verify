@@ -1,8 +1,9 @@
 //! Detached Ed25519 signatures for finalized SciRust-Verify evidence dossiers.
 //!
 //! Signatures intentionally live outside the sealed run directory. A
-//! signature binds the exact bytes of `bundle.json` together with the run id.
-//! `bundle.json` already contains SHA-256 digests for every sealed dossier
+//! signature binds the exact bytes of `bundle.json` together with the versioned
+//! detached-signature metadata (including run id, key identity, signer-reported
+//! time, and producing tool). `bundle.json` already contains SHA-256 digests for every sealed dossier
 //! file, so this preserves the immutable evidence bundle while adding
 //! cryptographic authorship of the finalized integrity manifest.
 //!
@@ -21,13 +22,17 @@ use rand_core::OsRng;
 use scirust_verify_model::{digest::Digest, SCHEMA_VERSION, TOOL_IDENTITY};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::Zeroize as _;
 
 const ALGORITHM: &str = "ed25519";
 const SIGNATURE_VERSION: u64 = 1;
 const CONTEXT: &[u8] = b"SciRust-Verify detached bundle signature v1\0";
+const SIGNED_OBJECT: &str =
+    "versioned detached-signature metadata and exact finalized bundle.json bytes";
 
 /// Public-key document written by [`generate_keypair`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicKeyDocument {
     /// Persisted-document schema version.
     pub schema_version: u64,
@@ -42,6 +47,7 @@ pub struct PublicKeyDocument {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PrivateKeyDocument {
     schema_version: u64,
     algorithm: String,
@@ -49,8 +55,15 @@ struct PrivateKeyDocument {
     secret_key_hex: String,
 }
 
+impl Drop for PrivateKeyDocument {
+    fn drop(&mut self) {
+        self.secret_key_hex.zeroize();
+    }
+}
+
 /// Detached signature metadata stored outside the immutable run directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignatureDocument {
     /// Persisted-document schema version.
     pub schema_version: u64,
@@ -144,6 +157,9 @@ pub enum SignatureError {
     /// Run id is not a portable, single filesystem component.
     #[error("unsafe run id `{0}`")]
     InvalidRunId(String),
+    /// Versioned metadata could not be serialized for cryptographic binding.
+    #[error("cannot serialize signed signature metadata: {0}")]
+    SignedMetadataSerialization(String),
 }
 
 impl SignatureError {
@@ -190,12 +206,14 @@ pub fn generate_keypair(
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
     let public = public_document(&verifying_key);
+    let mut seed = signing_key.to_bytes();
     let private = PrivateKeyDocument {
         schema_version: SCHEMA_VERSION,
         algorithm: ALGORITHM.to_owned(),
         key_id: public.key_id.clone(),
-        secret_key_hex: hex::encode(signing_key.to_bytes()),
+        secret_key_hex: hex::encode(seed),
     };
+    seed.zeroize();
 
     write_private_json(private_path, &private, force)?;
     if let Err(error) = write_public_json(public_path, &public, force) {
@@ -208,11 +226,9 @@ pub fn generate_keypair(
 /// Load and validate a public-key document.
 pub fn read_public_key(path: &Path) -> Result<PublicKeyDocument, SignatureError> {
     let bytes = fs::read(path).map_err(|e| SignatureError::io(path, e))?;
-    let doc: PublicKeyDocument =
-        serde_json::from_slice(&bytes).map_err(|e| SignatureError::Json {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+    let doc: PublicKeyDocument = serde_json::from_slice(&bytes).map_err(|e| {
+        SignatureError::InvalidKey(format!("cannot decode public-key document: {e}"))
+    })?;
     validate_public_document(&doc)?;
     Ok(doc)
 }
@@ -234,23 +250,23 @@ pub fn sign_bundle(
     let public = public_document(&signing_key.verifying_key());
     let bundle = fs::read(bundle_path).map_err(|e| SignatureError::io(bundle_path, e))?;
     let bundle_digest = Digest::sha256_hex(&bundle).value;
-    let message = signature_message(run_id, &bundle);
-    let signature = signing_key.sign(&message);
-
-    let doc = SignatureDocument {
+    let mut doc = SignatureDocument {
         schema_version: SCHEMA_VERSION,
         signature_version: SIGNATURE_VERSION,
         algorithm: ALGORITHM.to_owned(),
         run_id: run_id.to_owned(),
-        signed_object: "exact bytes of finalized bundle.json plus run-id domain binding".to_owned(),
+        signed_object: SIGNED_OBJECT.to_owned(),
         bundle_sha256: bundle_digest,
         key_id: public.key_id.clone(),
         public_key_fingerprint_sha256: public.fingerprint_sha256,
         public_key_hex: public.public_key_hex,
-        signature_hex: hex::encode(signature.to_bytes()),
+        signature_hex: String::new(),
         signed_at_utc: chrono_now(),
         signed_by_tool: TOOL_IDENTITY.to_owned(),
     };
+    let message = signature_message(&doc, &bundle)?;
+    let signature = signing_key.sign(&message);
+    doc.signature_hex = hex::encode(signature.to_bytes());
     let path = signature_path(signatures_root, run_id, &doc.key_id)?;
     preflight_output(&path, force)?;
     write_public_json(&path, &doc, force)?;
@@ -285,11 +301,9 @@ pub fn verify_bundle_signature(
     let bundle = fs::read(bundle_path).map_err(|e| SignatureError::io(bundle_path, e))?;
     let signature_bytes =
         fs::read(signature_path).map_err(|e| SignatureError::io(signature_path, e))?;
-    let doc: SignatureDocument =
-        serde_json::from_slice(&signature_bytes).map_err(|e| SignatureError::Json {
-            path: signature_path.to_path_buf(),
-            source: e,
-        })?;
+    let doc: SignatureDocument = serde_json::from_slice(&signature_bytes).map_err(|e| {
+        SignatureError::InvalidSignatureDocument(format!("cannot decode detached signature: {e}"))
+    })?;
     validate_signature_document(&doc)?;
     if doc.run_id != run_id {
         return Err(SignatureError::InvalidSignatureDocument(format!(
@@ -319,7 +333,7 @@ pub fn verify_bundle_signature(
     let verifying_key = verifying_key_from_document(&public)?;
     let signature = decode_signature(&doc.signature_hex)?;
     verifying_key
-        .verify_strict(&signature_message(run_id, &bundle), &signature)
+        .verify_strict(&signature_message(&doc, &bundle)?, &signature)
         .map_err(|_| SignatureError::VerificationFailed)?;
 
     Ok(SignatureVerification {
@@ -332,19 +346,20 @@ pub fn verify_bundle_signature(
 }
 
 fn read_private_key(path: &Path) -> Result<SigningKey, SignatureError> {
-    let bytes = fs::read(path).map_err(|e| SignatureError::io(path, e))?;
-    let doc: PrivateKeyDocument =
-        serde_json::from_slice(&bytes).map_err(|e| SignatureError::Json {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+    let mut bytes = fs::read(path).map_err(|e| SignatureError::io(path, e))?;
+    let parsed = serde_json::from_slice(&bytes);
+    bytes.zeroize();
+    let doc: PrivateKeyDocument = parsed.map_err(|e| {
+        SignatureError::InvalidKey(format!("cannot decode private-key document: {e}"))
+    })?;
     if doc.schema_version > SCHEMA_VERSION || doc.algorithm != ALGORITHM {
         return Err(SignatureError::InvalidKey(
             "unsupported private-key schema or algorithm".to_owned(),
         ));
     }
-    let raw = decode_fixed::<32>(&doc.secret_key_hex, "private key")?;
+    let mut raw = decode_fixed::<32>(&doc.secret_key_hex, "private key")?;
     let signing = SigningKey::from_bytes(&raw);
+    raw.zeroize();
     let public = public_document(&signing.verifying_key());
     if doc.key_id != public.key_id {
         return Err(SignatureError::InvalidKey(
@@ -386,6 +401,7 @@ fn validating_signature_fields(doc: &SignatureDocument) -> bool {
     doc.schema_version <= SCHEMA_VERSION
         && doc.signature_version == SIGNATURE_VERSION
         && doc.algorithm == ALGORITHM
+        && doc.signed_object == SIGNED_OBJECT
         && !doc.run_id.is_empty()
         && !doc.key_id.is_empty()
 }
@@ -420,16 +436,30 @@ fn verifying_key_from_document(doc: &PublicKeyDocument) -> Result<VerifyingKey, 
 }
 
 fn decode_signature(value: &str) -> Result<Signature, SignatureError> {
-    let raw = decode_fixed::<64>(value, "signature")?;
+    let bytes = hex::decode(value).map_err(|_| {
+        SignatureError::InvalidSignatureDocument("signature is not valid hexadecimal".to_owned())
+    })?;
+    let raw: [u8; 64] = bytes.try_into().map_err(|_| {
+        SignatureError::InvalidSignatureDocument(
+            "signature must contain exactly 64 bytes".to_owned(),
+        )
+    })?;
     Ok(Signature::from_bytes(&raw))
 }
 
 fn decode_fixed<const N: usize>(value: &str, what: &str) -> Result<[u8; N], SignatureError> {
-    let bytes = hex::decode(value)
+    let mut bytes = hex::decode(value)
         .map_err(|_| SignatureError::InvalidKey(format!("{what} is not valid hexadecimal")))?;
-    bytes
-        .try_into()
-        .map_err(|_| SignatureError::InvalidKey(format!("{what} must contain exactly {N} bytes")))
+    if bytes.len() != N {
+        bytes.zeroize();
+        return Err(SignatureError::InvalidKey(format!(
+            "{what} must contain exactly {N} bytes"
+        )));
+    }
+    let mut out = [0_u8; N];
+    out.copy_from_slice(&bytes);
+    bytes.zeroize();
+    Ok(out)
 }
 
 fn validate_run_id(run_id: &str) -> Result<(), SignatureError> {
@@ -446,13 +476,45 @@ fn validate_run_id(run_id: &str) -> Result<(), SignatureError> {
     Ok(())
 }
 
-fn signature_message(run_id: &str, bundle: &[u8]) -> Vec<u8> {
-    let mut message = Vec::with_capacity(CONTEXT.len() + run_id.len() + 1 + bundle.len());
+#[derive(Serialize)]
+struct SignedMetadata<'a> {
+    schema_version: u64,
+    signature_version: u64,
+    algorithm: &'a str,
+    run_id: &'a str,
+    signed_object: &'a str,
+    bundle_sha256: &'a str,
+    key_id: &'a str,
+    public_key_fingerprint_sha256: &'a str,
+    public_key_hex: &'a str,
+    signed_at_utc: &'a str,
+    signed_by_tool: &'a str,
+}
+
+fn signature_message(doc: &SignatureDocument, bundle: &[u8]) -> Result<Vec<u8>, SignatureError> {
+    let signed = SignedMetadata {
+        schema_version: doc.schema_version,
+        signature_version: doc.signature_version,
+        algorithm: &doc.algorithm,
+        run_id: &doc.run_id,
+        signed_object: &doc.signed_object,
+        bundle_sha256: &doc.bundle_sha256,
+        key_id: &doc.key_id,
+        public_key_fingerprint_sha256: &doc.public_key_fingerprint_sha256,
+        public_key_hex: &doc.public_key_hex,
+        signed_at_utc: &doc.signed_at_utc,
+        signed_by_tool: &doc.signed_by_tool,
+    };
+    let metadata = serde_json::to_vec(&signed)
+        .map_err(|e| SignatureError::SignedMetadataSerialization(e.to_string()))?;
+    let metadata_len = u64::try_from(metadata.len())
+        .map_err(|_| SignatureError::SignedMetadataSerialization("metadata too large".into()))?;
+    let mut message = Vec::with_capacity(CONTEXT.len() + 8 + metadata.len() + bundle.len());
     message.extend_from_slice(CONTEXT);
-    message.extend_from_slice(run_id.as_bytes());
-    message.push(0);
+    message.extend_from_slice(&metadata_len.to_be_bytes());
+    message.extend_from_slice(&metadata);
     message.extend_from_slice(bundle);
-    message
+    Ok(message)
 }
 
 fn preflight_output(path: &Path, force: bool) -> Result<(), SignatureError> {
@@ -524,19 +586,23 @@ fn write_private_json<T: Serialize>(
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(path)
-        .map_err(|e| SignatureError::io(path, e))?;
-    file.write_all(&bytes)
-        .map_err(|e| SignatureError::io(path, e))?;
-    file.sync_all().map_err(|e| SignatureError::io(path, e))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    let result = (|| -> Result<(), SignatureError> {
+        let mut file = options
+            .open(path)
             .map_err(|e| SignatureError::io(path, e))?;
-    }
-    Ok(())
+        file.write_all(&bytes)
+            .map_err(|e| SignatureError::io(path, e))?;
+        file.sync_all().map_err(|e| SignatureError::io(path, e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .map_err(|e| SignatureError::io(path, e))?;
+        }
+        Ok(())
+    })();
+    bytes.zeroize();
+    result
 }
 
 fn chrono_now() -> String {
@@ -621,6 +687,35 @@ mod tests {
         let (_, path) =
             sign_bundle("run-a", &bundle, &private, &dir.join("signatures"), false).unwrap();
         assert!(verify_bundle_signature("run-b", &bundle, &path, &public).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn signed_metadata_tampering_invalidates_signature() {
+        let dir = temp_dir("metadata-tamper");
+        let private = dir.join("private.json");
+        let public = dir.join("public.json");
+        let bundle = dir.join("bundle.json");
+        fs::write(&bundle, b"{}\n").unwrap();
+        generate_keypair(&private, &public, false).unwrap();
+        let (_, path) = sign_bundle(
+            "run-test",
+            &bundle,
+            &private,
+            &dir.join("signatures"),
+            false,
+        )
+        .unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let mut doc: SignatureDocument = serde_json::from_slice(&bytes).unwrap();
+        doc.signed_at_utc = "2099-01-01T00:00:00Z".to_owned();
+        let mut replacement = serde_json::to_vec_pretty(&doc).unwrap();
+        replacement.push(b'\n');
+        fs::write(&path, replacement).unwrap();
+        assert!(matches!(
+            verify_bundle_signature("run-test", &bundle, &path, &public),
+            Err(SignatureError::VerificationFailed)
+        ));
         let _ = fs::remove_dir_all(dir);
     }
 

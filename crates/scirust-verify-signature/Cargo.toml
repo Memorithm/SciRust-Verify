@@ -17,6 +17,7 @@ chrono = { workspace = true }
 hex = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand_core = { workspace = true }
+zeroize = { workspace = true }
 
 [lints]
 workspace = true

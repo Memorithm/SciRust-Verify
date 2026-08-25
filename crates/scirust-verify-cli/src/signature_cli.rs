@@ -160,7 +160,9 @@ fn map_signature_error(error: SignatureError, verification: bool) -> CliError {
         1
     } else {
         match error {
-            SignatureError::Io { .. } | SignatureError::Json { .. } => 3,
+            SignatureError::Io { .. }
+            | SignatureError::Json { .. }
+            | SignatureError::SignedMetadataSerialization(_) => 3,
             SignatureError::VerificationFailed
             | SignatureError::BundleDigestMismatch { .. }
             | SignatureError::PublicKeyMismatch { .. }

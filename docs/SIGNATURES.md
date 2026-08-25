@@ -9,10 +9,10 @@ A finalized run already contains `bundle.json`, the integrity manifest that reco
 Instead, SciRust-Verify signs a domain-separated message containing:
 
 1. the signature protocol context (`SciRust-Verify detached bundle signature v1`),
-2. the exact run id,
+2. a length-delimited serialization of all detached signature metadata except the signature bytes themselves (schema/signature versions, algorithm, run id, signed-object semantics, bundle digest, key id/fingerprint/public key, signer-reported time, and producing tool),
 3. the exact bytes of the finalized `bundle.json` file.
 
-This means any change to the integrity manifest, any move to a different run id, or any change to a sealed dossier file detected through the manifest invalidates the verification path.
+This means metadata cannot be rewritten without invalidating Ed25519. Any change to the integrity manifest, any move to a different run id, or any change to a sealed dossier file detected through the manifest invalidates the verification path.
 
 Detached signature documents are stored under:
 
@@ -32,6 +32,8 @@ scirust-verify keygen \
 
 The private document contains a randomly generated 32-byte Ed25519 signing seed. On Unix, SciRust-Verify creates the private-key file with mode `0600`. Existing files are not overwritten unless `--force` is supplied. Symbolic-link outputs are rejected.
 
+**V0.2 private-key files are not encrypted at rest.** Mode `0600` reduces accidental local disclosure on Unix but is not a substitute for encrypted storage, OS keyrings, HSMs, or hardware-backed signing. SciRust-Verify zeroizes its explicit transient seed/JSON buffers where practical, but cannot promise elimination of every compiler/runtime copy.
+
 SciRust-Verify never prints the private key material.
 
 The key id is derived from SHA-256 of the raw Ed25519 public key; it is not a user-selected identity label.
@@ -45,7 +47,7 @@ scirust-verify sign <run-id> \
 
 Before signing, SciRust-Verify re-runs the normal dossier integrity check. A corrupted, injected, incomplete, or non-finalized dossier is refused.
 
-The signature metadata records the SHA-256 of `bundle.json` for diagnostics and indexing, but the Ed25519 signature is over the full domain-separated message containing the exact manifest bytes.
+The signature metadata records the SHA-256 of `bundle.json` for diagnostics and indexing. All detached metadata fields except `signature_hex` are themselves cryptographically bound, and the Ed25519 signature also covers the exact manifest bytes.
 
 ## Verifying a signature
 
