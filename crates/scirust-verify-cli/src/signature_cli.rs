@@ -105,7 +105,15 @@ pub(crate) fn verify_signature(
     })?;
     let public = read_public_key(&public_key).map_err(|e| map_signature_error(e, true))?;
     let signatures_root = root.join(".scirust-verify/signatures");
-    let signature = signature.unwrap_or_else(|| signature_path(&signatures_root, run, &public.key_id));
+    let signature =
+        signature.unwrap_or_else(|| signature_path(&signatures_root, run, &public.key_id));
+    if !signature.is_file() {
+        return Err(CliError::not_found(format!(
+            "no detached signature for run `{run}` and key `{}` at {}",
+            public.key_id,
+            signature.display()
+        )));
+    }
     let verification = verify_bundle_signature(
         run,
         &store.path().join("bundle.json"),
@@ -115,10 +123,13 @@ pub(crate) fn verify_signature(
     .map_err(|e| map_signature_error(e, true))?;
 
     if json {
-        println!("{}", serde_json::to_string(&verification).map_err(|e| CliError {
-            message: format!("serialize signature verification: {e}"),
-            exit_code: 3,
-        })?);
+        println!(
+            "{}",
+            serde_json::to_string(&verification).map_err(|e| CliError {
+                message: format!("serialize signature verification: {e}"),
+                exit_code: 3,
+            })?
+        );
     } else {
         println!("signature: VALID");
         println!("  run:         {}", verification.run_id);
