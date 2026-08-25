@@ -100,8 +100,9 @@ scirust-verify doctor
 scirust-verify schema
 ```
 
-Exit codes: `0` pass/pass-with-gaps · `1` verification not established ·
-`2` usage/config error · `3` internal error.
+Exit codes: `0` pass/pass-with-gaps · `1` verification not established or
+requested run missing · `2` invalid usage/configuration (bad paths, bad
+manifests) · `3` internal error.
 
 ## Where are evidence dossiers stored?
 

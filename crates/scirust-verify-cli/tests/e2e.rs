@@ -370,6 +370,156 @@ fn replay_creates_new_linked_run_and_diff_compares() {
     }
 }
 
+#[test]
+fn primary_commands_have_help_and_stable_behavior() {
+    for cmd in [
+        "init", "inspect", "plan", "verify", "report", "replay", "diff", "doctor", "schema",
+    ] {
+        let out = cli().args([cmd, "--help"]).output().unwrap();
+        assert!(out.status.success(), "{cmd} --help failed");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("Usage:"), "{cmd} help lacks usage");
+    }
+
+    // Nonexistent run => exit 1 with meaningful message, no panic.
+    let out = cli()
+        .args(["report", "run-does-not-exist"])
+        .current_dir(tempfile_dir("empty"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("not found") || err.contains("run verify first"),
+        "{err}"
+    );
+
+    // Invalid input (bad path) exits 2 with a meaningful message.
+    let out = cli()
+        .args(["inspect", "/definitely/not/a/real/path-xyz"])
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not usable"));
+}
+
+#[test]
+fn doctor_and_schema_succeed() {
+    let doc = cli().arg("doctor").output().unwrap();
+    assert!(doc.status.success());
+    assert!(String::from_utf8_lossy(&doc.stdout).contains("rustc"));
+
+    let schema = cli().arg("schema").output().unwrap();
+    assert!(schema.status.success());
+    let text = String::from_utf8_lossy(&schema.stdout);
+    assert!(text.contains("run.json") && text.contains("bundle.json"));
+}
+
+#[test]
+fn init_generates_manifest_without_clobbering() {
+    let dir = tempfile_dir("init-project");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]
+name=\"initp\"\nversion=\"0.1.0\"\nedition=\"2021\"\n\n[workspace]\n",
+    )
+    .unwrap();
+
+    // First init writes.
+    let out = cli()
+        .args(["init", dir.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let manifest = dir.join("scirust-verify.toml");
+    let first = std::fs::read_to_string(&manifest).unwrap();
+    assert!(first.contains("schema_version = 1"));
+
+    // Second init refuses to clobber.
+    let out = cli()
+        .args(["init", dir.to_str().unwrap()])
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--force"), "{err}");
+
+    // --force overwrites.
+    let out = cli()
+        .args(["init", dir.to_str().unwrap(), "--force"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+
+#[test]
+fn plan_lists_expected_cargo_checks() {
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let out = cli()
+        .args(["plan", project.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("cargo:build"), "{text}");
+    assert!(text.contains("cargo:test"), "{text}");
+    assert!(text.contains("core:source-clean"), "{text}");
+}
+
+#[test]
+fn paths_with_spaces_and_unicode_roundtrip() {
+    prebuild_fixtures();
+    let weird = tempfile_dir("weird path with spaces ünicode-Ω");
+    let src = fixture("passing-project");
+    // Copy fixture source (without target/.scirust-verify) into weird path.
+    copy_dir(&src, &weird);
+
+    let out = cli()
+        .args([
+            "verify",
+            weird.to_str().unwrap(),
+            "--output",
+            weird
+                .join("store")
+                .join(".scirust-verify")
+                .to_str()
+                .unwrap(),
+        ])
+        .timeout(std::time::Duration::from_secs(180))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{} / {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn copy_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap().flatten() {
+        let name = entry.file_name();
+        if name == "target" || name == ".scirust-verify" {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if from.is_dir() {
+            copy_dir(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).unwrap();
+        }
+    }
+}
+
 fn evidence_files(run_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let dir = run_dir.join("evidence");

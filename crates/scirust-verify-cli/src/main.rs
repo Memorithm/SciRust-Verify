@@ -5,7 +5,7 @@
 //!   invoked informational command completed.
 //! * `1` — verification did not establish its required claims
 //!   (`FAIL`/`NOT_VERIFIED`), or a requested run/report does not exist.
-//! * `2` — invalid usage or configuration.
+//! * `2` — invalid usage or configuration (bad paths, bad manifests).
 //! * `3` — internal execution error (storage failure, spawn infrastructure).
 
 #![deny(missing_docs)]
@@ -122,7 +122,7 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::from(3)
+            ExitCode::from(e.exit_code)
         }
     }
 }
@@ -165,13 +165,35 @@ fn current_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Error type for CLI-level failures (usage/config problems exit 2).
+/// Error type for CLI-level failures.
+///
+/// Exit-code contract: requested-but-missing runs exit 1; usage and
+/// configuration problems exit 2; infrastructure failures exit 3.
 #[derive(Debug)]
-struct CliError(String);
+struct CliError {
+    message: String,
+    exit_code: u8,
+}
+
+impl CliError {
+    fn usage(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            exit_code: 2,
+        }
+    }
+
+    fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            exit_code: 1,
+        }
+    }
+}
 
 impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
@@ -188,9 +210,8 @@ fn locate_runs_root() -> Result<PathBuf, CliError> {
             return Ok(dir);
         }
         if !dir.pop() {
-            return Err(CliError(
-                "no `.scirust-verify/runs` found here or in any parent directory; run verify first"
-                    .into(),
+            return Err(CliError::not_found(
+                "no `.scirust-verify/runs` found here or in any parent directory; run verify first",
             ));
         }
     }
@@ -244,10 +265,10 @@ fn load_manifest_or_default(project: &Path) -> Manifest {
 // ---------------------------------------------------------------------------
 
 fn init(path: PathBuf, force: bool) -> Result<ExitCode, CliError> {
-    let ctx = DiscoveryContext::discover(&path).map_err(|e| CliError(e.to_string()))?;
+    let ctx = DiscoveryContext::discover(&path).map_err(|e| CliError::usage(e.to_string()))?;
     let manifest_path = path.join(scirust_verify_core::manifest::MANIFEST_FILE);
     if manifest_path.exists() && !force {
-        return Err(CliError(format!(
+        return Err(CliError::usage(format!(
             "{} already exists; pass --force to overwrite",
             manifest_path.display()
         )));
@@ -288,7 +309,8 @@ fn init(path: PathBuf, force: bool) -> Result<ExitCode, CliError> {
     }
 
     let body = toml_toml_string(&manifest)?;
-    std::fs::write(&manifest_path, body).map_err(|e| CliError(format!("write failed: {e}")))?;
+    std::fs::write(&manifest_path, body)
+        .map_err(|e| CliError::usage(format!("write failed: {e}")))?;
     println!("wrote {}", manifest_path.display());
     println!("next: scirust-verify plan {}", path.display());
     Ok(ExitCode::SUCCESS)
@@ -314,7 +336,7 @@ fn toml_toml_string(manifest: &Manifest) -> Result<String, CliError> {
 }
 
 fn inspect(path: PathBuf, json: bool) -> Result<ExitCode, CliError> {
-    let ctx = DiscoveryContext::discover(&path).map_err(|e| CliError(e.to_string()))?;
+    let ctx = DiscoveryContext::discover(&path).map_err(|e| CliError::usage(e.to_string()))?;
     let manifest = load_manifest_or_default(&path);
     let registry = build_registry(&manifest);
     let opts = VerifyOptions::for_root(path.clone());
@@ -416,7 +438,8 @@ fn plan(path: PathBuf, profile: Option<String>, json: bool) -> Result<ExitCode, 
     };
     let manifest = load_manifest_or_default(&opts.project_root);
     let registry = build_registry(&manifest);
-    let prepared = pipeline::prepare(&registry, &opts).map_err(|e| CliError(e.to_string()))?;
+    let prepared =
+        pipeline::prepare(&registry, &opts).map_err(|e| CliError::usage(e.to_string()))?;
 
     if json {
         let checks: Vec<serde_json::Value> = prepared
@@ -478,7 +501,7 @@ fn verify(
         .project_root
         .join(scirust_verify_core::manifest::MANIFEST_FILE);
     if manifest_path.is_file() {
-        Manifest::load(&manifest_path).map_err(|e| CliError(e.to_string()))?;
+        Manifest::load(&manifest_path).map_err(|e| CliError::usage(e.to_string()))?;
     }
     let manifest = load_manifest_or_default(&opts.project_root);
     let registry = build_registry(&manifest);
@@ -511,10 +534,10 @@ fn verify(
                 ExitCode::from(1)
             })
         }
-        Err(pipeline::PipelineError::Manifest(e)) => Err(CliError(e.to_string())),
+        Err(pipeline::PipelineError::Manifest(e)) => Err(CliError::usage(e.to_string())),
         Err(e) => {
             eprintln!("internal error: {e}");
-            Err(CliError("verification aborted".into()))
+            Err(CliError::usage("verification aborted"))
         }
     }
 }
@@ -523,7 +546,7 @@ fn open_run(run: &str) -> Result<(PathBuf, scirust_verify_store::RunStore), CliE
     let root = locate_runs_root()?;
     let runs = runs_root_for(&root);
     let store = runs.open(run).map_err(|_| {
-        CliError(format!(
+        CliError::usage(format!(
             "run `{run}` not found under {}",
             runs.path().display()
         ))
@@ -540,7 +563,7 @@ fn report(
     let (_root, store) = open_run(run)?;
     let doc = store
         .read_run_document()
-        .map_err(|e| CliError(e.to_string()))?;
+        .map_err(|e| CliError::usage(e.to_string()))?;
     if check_integrity {
         match store.verify_integrity() {
             Ok(n) => println!("integrity OK ({n} sealed files)"),
@@ -552,7 +575,7 @@ fn report(
     }
     if json || (!markdown && is_terminal_json_default()) {
         let text = store.read_text("report.json").map_err(|e| {
-            CliError(format!(
+            CliError::usage(format!(
                 "report.json unavailable: {e}; use --regenerate via verify"
             ))
         })?;
@@ -560,12 +583,12 @@ fn report(
     } else if markdown {
         let text = store
             .read_text("report.md")
-            .map_err(|e| CliError(e.to_string()))?;
+            .map_err(|e| CliError::usage(e.to_string()))?;
         println!("{text}");
     } else {
         let text = store
             .read_text("report.md")
-            .map_err(|e| CliError(e.to_string()))?;
+            .map_err(|e| CliError::usage(e.to_string()))?;
         println!("{text}");
     }
     let _ = doc;
@@ -580,13 +603,15 @@ fn replay(run: &str, strict: bool, json: bool) -> Result<ExitCode, CliError> {
     let (root, store) = open_run(run)?;
     let original_doc = store
         .read_run_document()
-        .map_err(|e| CliError(e.to_string()))?;
+        .map_err(|e| CliError::usage(e.to_string()))?;
     let manifest_text = store
         .read_text("manifest-used.json")
-        .map_err(|e| CliError(format!("stored manifest missing: {e}")))?;
+        .map_err(|e| CliError::usage(format!("stored manifest missing: {e}")))?;
     let manifest: Manifest = serde_json::from_str(&manifest_text)
-        .map_err(|e| CliError(format!("stored manifest unreadable: {e}")))?;
-    let artifact = store.read_artifact().map_err(|e| CliError(e.to_string()))?;
+        .map_err(|e| CliError::usage(format!("stored manifest unreadable: {e}")))?;
+    let artifact = store
+        .read_artifact()
+        .map_err(|e| CliError::usage(e.to_string()))?;
     let project_root = artifact.path.clone();
     drop(store);
 
@@ -621,10 +646,10 @@ fn replay(run: &str, strict: bool, json: bool) -> Result<ExitCode, CliError> {
                 ExitCode::from(1)
             })
         }
-        Err(pipeline::PipelineError::Manifest(e)) => Err(CliError(e.to_string())),
+        Err(pipeline::PipelineError::Manifest(e)) => Err(CliError::usage(e.to_string())),
         Err(e) => {
             eprintln!("internal error: {e}");
-            Err(CliError("replay aborted".into()))
+            Err(CliError::usage("replay aborted"))
         }
     }
 }
@@ -632,11 +657,15 @@ fn replay(run: &str, strict: bool, json: bool) -> Result<ExitCode, CliError> {
 fn diff(run_a: &str, run_b: &str) -> Result<ExitCode, CliError> {
     let (root, _) = open_run(run_a)?;
     let runs = runs_root_for(&root);
-    let sa = runs.open(run_a).map_err(|e| CliError(e.to_string()))?;
-    let sb = runs.open(run_b).map_err(|e| CliError(e.to_string()))?;
+    let sa = runs
+        .open(run_a)
+        .map_err(|e| CliError::usage(e.to_string()))?;
+    let sb = runs
+        .open(run_b)
+        .map_err(|e| CliError::usage(e.to_string()))?;
 
-    let da = run_summary(&sa).map_err(|e| CliError(e.to_string()))?;
-    let db = run_summary(&sb).map_err(|e| CliError(e.to_string()))?;
+    let da = run_summary(&sa).map_err(|e| CliError::usage(e.to_string()))?;
+    let db = run_summary(&sb).map_err(|e| CliError::usage(e.to_string()))?;
 
     let mut lines = Vec::new();
     push_diff_line(&mut lines, "commit", &da.commit, &db.commit);
