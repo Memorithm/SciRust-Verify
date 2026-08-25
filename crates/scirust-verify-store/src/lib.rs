@@ -434,6 +434,18 @@ impl RunStore {
         evidence: &Evidence,
         attachments: &BTreeMap<String, Vec<u8>>,
     ) -> Result<(), StoreError> {
+        // Evidence ids are immutable once written: a second write with the
+        // same id would silently rewrite history.
+        let ev_file = format!("evidence/{}.json", evidence.id.as_str());
+        if self.run_dir.join(&ev_file).exists() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!(
+                    "evidence id {} already exists; ids are immutable once written",
+                    evidence.id
+                ),
+            ));
+        }
         // Validate attachment references against supplied payloads.
         let mut resolved = Vec::new();
         for att in &evidence.attachments {
@@ -469,8 +481,7 @@ impl RunStore {
         }
         let _ = resolved; // paths inside evidence already point into the run dir
 
-        let file = format!("evidence/{}.json", evidence.id.as_str());
-        self.write_json(&file, evidence)
+        self.write_json(&ev_file, evidence)
     }
 
     /// Loads every evidence object of the run (sorted by id).
@@ -609,9 +620,16 @@ impl RunStore {
                 }
             }
         }
-        // Derivation links between evidence must resolve.
+        // Derivation links between evidence must resolve and must not be
+        // self-referential.
         for ev in &evidence {
             for dep in &ev.derived_from {
+                if dep == &ev.id {
+                    return Err(StoreError::corrupt(
+                        self.run_id.as_str(),
+                        format!("evidence {} derives from itself", ev.id),
+                    ));
+                }
                 if !seen_ids.contains(dep.as_str()) {
                     return Err(StoreError::corrupt(
                         self.run_id.as_str(),

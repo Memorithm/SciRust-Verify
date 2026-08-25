@@ -471,6 +471,7 @@ dependencies = [
  "scirust-verify-model",
  "scirust-verify-report",
  "scirust-verify-runner",
+ "scirust-verify-scirust",
  "scirust-verify-store",
  "serde_json",
 ]
