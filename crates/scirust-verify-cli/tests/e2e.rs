@@ -1064,3 +1064,255 @@ fn tempfile_dir(tag: &str) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+#[test]
+fn compare_runs_creates_sealed_derived_parity_dossier() {
+    prebuild_fixtures();
+    let project = fixture("numeric-pass");
+    let store = tempfile_dir("compare-runs-store");
+    let output = store.join(".scirust-verify");
+    for _ in 0..2 {
+        let verified = cli()
+            .args([
+                "verify",
+                project.to_str().unwrap(),
+                "--output",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            verified.status.success(),
+            "{}",
+            String::from_utf8_lossy(&verified.stderr)
+        );
+    }
+    let source_ids = run_ids_in(&output.join("runs"));
+    assert_eq!(source_ids.len(), 2);
+
+    let compared = cli()
+        .args([
+            "--json",
+            "compare-runs",
+            &source_ids[0],
+            &source_ids[1],
+            "--project",
+            store.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        compared.status.success(),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&compared.stderr),
+        String::from_utf8_lossy(&compared.stdout)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&compared.stdout).unwrap();
+    assert_eq!(
+        doc.get("verdict").and_then(|v| v.as_str()),
+        Some("verified")
+    );
+    assert_eq!(
+        doc.get("claim_kind").and_then(|v| v.as_str()),
+        Some("cross_run_output_parity")
+    );
+    assert!(
+        doc.pointer("/comparison/compared_outputs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            >= 1
+    );
+    let derived = doc.get("run_id").and_then(|v| v.as_str()).unwrap();
+    let bundle = output.join("runs").join(derived).join("bundle.json");
+    assert!(bundle.is_file());
+
+    let report = cli()
+        .args(["report", derived, "--check-integrity", "--json"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        report.status.success(),
+        "{}",
+        String::from_utf8_lossy(&report.stderr)
+    );
+
+    // The same source runs do not prove CPU/GPU identity merely because the
+    // caller asks for that semantic claim. A finalized NOT_VERIFIED dossier
+    // is still produced so the gap itself is auditable.
+    let strict = cli()
+        .args([
+            "--json",
+            "compare-runs",
+            &source_ids[0],
+            &source_ids[1],
+            "--project",
+            store.to_str().unwrap(),
+            "--require-cpu-gpu",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(strict.status.code(), Some(1));
+    let strict_doc: serde_json::Value = serde_json::from_slice(&strict.stdout).unwrap();
+    assert_eq!(
+        strict_doc.get("claim_kind").and_then(|v| v.as_str()),
+        Some("cpu_gpu_parity")
+    );
+    assert_eq!(
+        strict_doc
+            .get("cpu_gpu_roles_established")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        strict_doc.get("verdict").and_then(|v| v.as_str()),
+        Some("not_verified")
+    );
+    let strict_run = strict_doc.get("run_id").and_then(|v| v.as_str()).unwrap();
+    assert!(output
+        .join("runs")
+        .join(strict_run)
+        .join("bundle.json")
+        .is_file());
+}
+
+fn reseal_numeric_input_set(output: &Path, run_id: &str, input_set: &str) {
+    let run = output.join("runs").join(run_id);
+    let executions: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(run.join("executions.json")).unwrap())
+            .unwrap();
+    let execution = executions["executions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| {
+            entry["check_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("numeric:"))
+        })
+        .expect("numeric execution");
+    let evidence_id = execution["evidence_ids"][0]
+        .as_str()
+        .expect("numeric evidence id");
+    let relative = format!("evidence/{evidence_id}.json");
+    let evidence_path = run.join(&relative);
+    let mut evidence: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&evidence_path).unwrap()).unwrap();
+    evidence["scope"]["input_set"] = serde_json::json!(input_set);
+    let mut evidence_bytes = serde_json::to_vec_pretty(&evidence).unwrap();
+    evidence_bytes.push(b'\n');
+    std::fs::write(&evidence_path, &evidence_bytes).unwrap();
+
+    let bundle_path = run.join("bundle.json");
+    let mut bundle: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&bundle_path).unwrap()).unwrap();
+    bundle["files"][&relative] =
+        serde_json::json!(scirust_verify_model::Digest::sha256_hex(&evidence_bytes).value);
+    let mut bundle_bytes = serde_json::to_vec_pretty(&bundle).unwrap();
+    bundle_bytes.push(b'\n');
+    std::fs::write(bundle_path, bundle_bytes).unwrap();
+}
+
+#[test]
+fn compare_runs_conflicting_recorded_input_sets_are_not_verified() {
+    prebuild_fixtures();
+    let project = fixture("numeric-pass");
+    let store = tempfile_dir("compare-runs-input-scope");
+    let output = store.join(".scirust-verify");
+    for _ in 0..2 {
+        let verified = cli()
+            .args([
+                "verify",
+                project.to_str().unwrap(),
+                "--output",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(verified.status.success());
+    }
+    let source_ids = run_ids_in(&output.join("runs"));
+    reseal_numeric_input_set(&output, &source_ids[0], "dataset-A");
+    reseal_numeric_input_set(&output, &source_ids[1], "dataset-B");
+
+    let compared = cli()
+        .args([
+            "--json",
+            "compare-runs",
+            &source_ids[0],
+            &source_ids[1],
+            "--project",
+            store.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(compared.status.code(), Some(1));
+    let doc: serde_json::Value = serde_json::from_slice(&compared.stdout).unwrap();
+    assert_eq!(doc["verdict"].as_str(), Some("not_verified"));
+    assert_eq!(
+        doc.pointer("/input_relation/status")
+            .and_then(|v| v.as_str()),
+        Some("not_verified")
+    );
+    assert!(doc
+        .pointer("/input_relation/reason")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("dataset-A"));
+    let derived = doc["run_id"].as_str().unwrap();
+    let report = cli()
+        .args(["report", derived, "--check-integrity", "--json"])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(report.status.success());
+}
+
+#[test]
+fn compare_runs_rejects_tampered_source_dossier() {
+    prebuild_fixtures();
+    let project = fixture("numeric-pass");
+    let store = tempfile_dir("compare-runs-tamper");
+    let output = store.join(".scirust-verify");
+    for _ in 0..2 {
+        let verified = cli()
+            .args([
+                "verify",
+                project.to_str().unwrap(),
+                "--output",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(verified.status.success());
+    }
+    let source_ids = run_ids_in(&output.join("runs"));
+    let executions = output
+        .join("runs")
+        .join(&source_ids[0])
+        .join("executions.json");
+    let original = std::fs::read_to_string(&executions).unwrap();
+    std::fs::write(
+        &executions,
+        original.replace("numeric_comparison", "numeric_corrupted"),
+    )
+    .unwrap();
+
+    let compared = cli()
+        .args([
+            "--json",
+            "compare-runs",
+            &source_ids[0],
+            &source_ids[1],
+            "--project",
+            store.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(compared.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&compared.stderr).contains("integrity"),
+        "{}",
+        String::from_utf8_lossy(&compared.stderr)
+    );
+}

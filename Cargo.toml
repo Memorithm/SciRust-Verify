@@ -4,6 +4,7 @@ members = [
     "crates/scirust-verify-model",
     "crates/scirust-verify-runner",
     "crates/scirust-verify-numerics",
+    "crates/scirust-verify-parity",
     "crates/scirust-verify-store",
     "crates/scirust-verify-policy",
     "crates/scirust-verify-core",
@@ -28,6 +29,7 @@ authors = ["Tarek Zekriti (https://github.com/CHECKUPAUTO/)"]
 scirust-verify-model = { path = "crates/scirust-verify-model" }
 scirust-verify-runner = { path = "crates/scirust-verify-runner" }
 scirust-verify-numerics = { path = "crates/scirust-verify-numerics" }
+scirust-verify-parity = { path = "crates/scirust-verify-parity" }
 scirust-verify-store = { path = "crates/scirust-verify-store" }
 scirust-verify-policy = { path = "crates/scirust-verify-policy" }
 scirust-verify-core = { path = "crates/scirust-verify-core" }

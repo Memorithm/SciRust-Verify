@@ -56,6 +56,8 @@ pub enum EvidenceKind {
     ToolchainIdentity,
     /// A numeric comparison against expected values/tolerances.
     NumericComparison,
+    /// Comparison derived from two previously sealed verification runs.
+    CrossRunComparison,
     /// Comparison against an independent oracle.
     OracleComparison,
     /// Canonical output fingerprint(s).

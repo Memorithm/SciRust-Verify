@@ -1,0 +1,18 @@
+[package]
+name = "scirust-verify-parity"
+description = "Pure comparison engine for structured outputs from sealed SciRust-Verify runs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+scirust-verify-model = { workspace = true }
+scirust-verify-numerics = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

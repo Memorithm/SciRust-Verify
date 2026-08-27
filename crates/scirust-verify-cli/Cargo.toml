@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 scirust-verify-model = { workspace = true }
+scirust-verify-parity = { workspace = true }
 scirust-verify-runner = { workspace = true }
 scirust-verify-store = { workspace = true }
 scirust-verify-core = { workspace = true }
@@ -24,7 +25,9 @@ scirust-verify-signature = { workspace = true }
 scirust-verify-artifacts = { workspace = true }
 scirust-verify-report = { workspace = true }
 clap = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
