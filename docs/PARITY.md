@@ -7,6 +7,9 @@ SciRust-Verify parity is a comparison of **recorded evidence**, not a backend la
 Both inputs must be finalized SciRust-Verify runs whose `bundle.json` integrity manifests verify.
 The source artifacts must identify the same artifact id, kind, name and version, and the same source
 state using either an equal source-tree digest or an equal Git commit recorded from clean worktrees.
+A source-tree digest is compared only when both runs carry one; if it is supplemental metadata on
+only one side, an identical Git commit recorded clean on both sides remains a valid common source
+anchor rather than being rejected merely because the metadata is asymmetric.
 
 V1 compares two structured observation classes:
 
