@@ -215,3 +215,34 @@ architecture/features, backend, and explicit GPU vendor/device/driver data when 
 This is **coverage certification, not output comparison**. Two successful runs on CPU and CUDA
 do not establish CPU/GPU parity merely because both are present; parity must itself be a verified
 `cpu_gpu_parity` claim backed by comparison evidence.
+
+
+## Cross-run output parity
+
+`compare-runs` compares machine-readable outputs already sealed in two finalized dossiers and
+creates a **new derived evidence dossier** for the comparison:
+
+```bash
+scirust-verify compare-runs RUN_A RUN_B --absolute 1e-6 --relative 1e-6 --json
+```
+
+V1 compares only structured `numeric_comparison.observed` values and canonical `fingerprint`
+observations with the same check/name identity. Numeric values are independently re-evaluated by
+SciRust-Verify under the explicitly selected tolerance; fingerprints are exact. Missing,
+duplicate, malformed, or unit-incompatible outputs produce `NOT_VERIFIED`; complete but unequal
+outputs produce `FAILED`; only a complete match produces `VERIFIED`.
+
+The derived dossier records SHA-256 digests of both source `bundle.json` manifests and refuses to
+consume either run unless its full dossier integrity verifies first. The two source artifacts must
+also have a provably identical source state (same tree digest or same clean Git commit).
+
+For the specialized CPU/GPU claim:
+
+```bash
+scirust-verify compare-runs CPU_RUN GPU_RUN --require-cpu-gpu --absolute 1e-6
+```
+
+`cpu_gpu_parity` is **not** established from CLI labels. One source endpoint must be recorded as a
+CPU scope and the other must carry a concrete GPU backend/device identity in its sealed evidence.
+If that identity is absent, SciRust-Verify still writes an auditable derived dossier but returns
+`NOT_VERIFIED` even when the numeric outputs happen to match.

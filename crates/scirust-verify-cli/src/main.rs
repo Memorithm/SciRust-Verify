@@ -28,6 +28,7 @@ use scirust_verify_store::RunsRoot;
 
 mod aggregate_cli;
 mod artifacts_cli;
+mod parity_cli;
 mod scirust_ingest;
 mod signature_cli;
 
@@ -119,6 +120,31 @@ enum Command {
     Doctor,
     /// Print the persisted-document schema catalog.
     Schema,
+    /// Compare structured outputs from two sealed runs and create a derived evidence dossier.
+    CompareRuns {
+        /// First finalized source run.
+        left_run: String,
+        /// Second finalized source run.
+        right_run: String,
+        /// Project root containing `.scirust-verify/runs`.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Maximum absolute numeric difference; omitted means no absolute criterion.
+        #[arg(long)]
+        absolute: Option<f64>,
+        /// Maximum relative numeric difference; omitted means no relative criterion.
+        #[arg(long)]
+        relative: Option<f64>,
+        /// Maximum IEEE-754 ULP distance; omitted means no ULP criterion.
+        #[arg(long)]
+        max_ulps: Option<u64>,
+        /// Treat +0.0 and -0.0 as different in exact/numeric comparisons.
+        #[arg(long)]
+        strict_signed_zero: bool,
+        /// Evaluate the specialized cpu_gpu_parity claim and require recorded CPU + concrete GPU endpoint identity.
+        #[arg(long)]
+        require_cpu_gpu: bool,
+    },
     /// Aggregate one claim across integrity-verified dossiers and assess scope coverage.
     Aggregate {
         /// Claim id or substring to match (e.g. `cross_process`).
@@ -244,6 +270,50 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
         } => report(&run, json, markdown, check_integrity),
         Command::Replay { run, strict } => replay(&run, strict, cli.json),
         Command::Diff { run_a, run_b } => diff(&run_a, &run_b),
+        Command::CompareRuns {
+            left_run,
+            right_run,
+            project,
+            absolute,
+            relative,
+            max_ulps,
+            strict_signed_zero,
+            require_cpu_gpu,
+        } => {
+            let root = match project {
+                Some(path) => path,
+                None => locate_runs_root()?,
+            };
+            let outcome = parity_cli::execute(&parity_cli::CompareRunsOptions {
+                left_run: &left_run,
+                right_run: &right_run,
+                project: &root,
+                tolerance: scirust_verify_model::Tolerance {
+                    absolute,
+                    relative,
+                    max_ulps,
+                    strict_signed_zero,
+                },
+                require_cpu_gpu,
+            })
+            .map_err(|error| CliError {
+                message: error.to_string(),
+                exit_code: error.exit_code(),
+            })?;
+            if cli.json {
+                println!("{}", outcome.document);
+            } else {
+                print!("{}", outcome.human);
+            }
+            let _ = &outcome.run_id;
+            Ok(
+                if outcome.verdict == scirust_verify_model::Verdict::Verified {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                },
+            )
+        }
         Command::Aggregate {
             claim,
             runs,

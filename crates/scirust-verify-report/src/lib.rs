@@ -141,6 +141,32 @@ pub(crate) fn derive_limitations(loaded: &Loaded) -> Vec<String> {
         }
     }
 
+    // Cross-run parity honesty: compared structured observations are a finite,
+    // explicitly selected output surface, never an implicit statement about
+    // every possible input, backend, or device.
+    let parity_claims = loaded.evaluations.iter().any(|(_, ev)| {
+        ev.get("claim_id")
+            .and_then(|c| c.as_str())
+            .is_some_and(|c| c.contains("parity"))
+    });
+    if parity_claims {
+        limits.push(
+            "cross-run parity covers only structured outputs recorded in both source dossiers; unrecorded outputs were not compared"
+                .to_owned(),
+        );
+    }
+    let cpu_gpu_parity = loaded.evaluations.iter().any(|(_, ev)| {
+        ev.get("claim_id")
+            .and_then(|c| c.as_str())
+            .is_some_and(|c| c.contains("cpu_gpu_parity"))
+    });
+    if cpu_gpu_parity {
+        limits.push(
+            "CPU/GPU parity is scoped to the recorded source-run endpoint identities, inputs and tolerance; it is not a universal statement about other devices or inputs"
+                .to_owned(),
+        );
+    }
+
     // Numeric sampling honesty.
     let numeric_claims = loaded.evaluations.iter().any(|(_, ev)| {
         ev.get("claim_id")

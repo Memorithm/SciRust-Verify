@@ -596,6 +596,7 @@ name = "scirust-verify-cli"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
+ "chrono",
  "clap",
  "hex",
  "scirust-verify-artifacts",
@@ -603,11 +604,13 @@ dependencies = [
  "scirust-verify-core",
  "scirust-verify-determinism",
  "scirust-verify-model",
+ "scirust-verify-parity",
  "scirust-verify-report",
  "scirust-verify-runner",
  "scirust-verify-scirust",
  "scirust-verify-signature",
  "scirust-verify-store",
+ "serde",
  "serde_json",
 ]
 
@@ -661,6 +664,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "scirust-verify-parity"
+version = "0.1.0"
+dependencies = [
+ "scirust-verify-model",
+ "scirust-verify-numerics",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
