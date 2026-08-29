@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "id": "8f8f0dbe-b28d-4cae-b728-49724eb0c121",
+  "name": "SciRust-Verify",
+  "version": "0.1.0",
+  "kind": "tool",
+  "capabilities": [
+    {
+      "name": "verify.dossier_integrity",
+      "contract_version": "1.0.0",
+      "inputs": [
+        {
+          "name": "dossier",
+          "description": "application/vnd.scirust.verify-dossier-transport.v1"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "result",
+          "description": "application/vnd.scirust.verify-hub-inspection.v1+json"
+        }
+      ],
+      "properties": {
+        "claim_semantics": "integrity_only",
+        "input_media_type": "application/vnd.scirust.verify-dossier-transport.v1",
+        "result_media_type": "application/vnd.scirust.verify-hub-inspection.v1+json",
+        "sandbox": "none"
+      }
+    }
+  ],
+  "execution": {
+    "type": "process",
+    "program": "/opt/scirust-verify/bin/scirust-verify-hub",
+    "args": [
+      "inspect",
+      "--dossier",
+      "{input:dossier}",
+      "--result",
+      "{output:result}"
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "path": "outputs/scirust-verify-inspection.json",
+        "media_type": "application/vnd.scirust.verify-hub-inspection.v1+json",
+        "required": true
+      }
+    ]
+  },
+  "metadata": {
+    "contract": "scirust-verify-hub-integrity-v1",
+    "dossier_transport": "svtr-v1",
+    "trust_boundary": "integrity_only"
+  }
+}
