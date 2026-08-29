@@ -196,7 +196,10 @@ fn inspection_from_transport(outcome: TransportOutcome) -> Result<HubInspectionR
 }
 
 fn write_result(path: &Path, result: &HubInspectionResult) -> Result<(), HubError> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
     }
     let mut bytes = serde_json::to_vec_pretty(result).map_err(HubError::Json)?;
