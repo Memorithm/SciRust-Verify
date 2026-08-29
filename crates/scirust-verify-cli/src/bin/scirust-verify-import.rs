@@ -13,7 +13,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use clap::Parser;
-use scirust_verify_model::Digest;
+use scirust_verify_model::{Digest, SCHEMA_VERSION};
 use scirust_verify_store::{BundleManifest, RunState, RunsRoot};
 use serde::Serialize;
 
@@ -36,16 +36,24 @@ struct Cli {
 
 #[derive(Debug)]
 enum ImportError {
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     InvalidSource(String),
     Store(scirust_verify_store::StoreError),
-    Json { path: PathBuf, source: serde_json::Error },
+    Json {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io { path, source } => write!(f, "filesystem error at `{}`: {source}", path.display()),
+            Self::Io { path, source } => {
+                write!(f, "filesystem error at `{}`: {source}", path.display())
+            }
             Self::InvalidSource(reason) => f.write_str(reason),
             Self::Store(error) => error.fmt(f),
             Self::Json { path, source } => {
@@ -124,6 +132,12 @@ fn import_bundle(bundle_dir: &Path, project: &Path) -> Result<ImportOutcome, Imp
         .ok_or_else(|| ImportError::InvalidSource("run directory has no parent".into()))?;
     let source_store = RunsRoot::new(source_parent).open(&run_id)?;
     let source_doc = source_store.read_run_document()?;
+    if source_doc.schema_version > SCHEMA_VERSION {
+        return Err(ImportError::InvalidSource(format!(
+            "run `{run_id}` uses unsupported schema version {} (supported: <= {SCHEMA_VERSION})",
+            source_doc.schema_version
+        )));
+    }
     if source_doc.run_id.as_str() != run_id {
         return Err(ImportError::InvalidSource(format!(
             "run identity mismatch: directory is `{run_id}` but run.json declares `{}`",
@@ -135,8 +149,11 @@ fn import_bundle(bundle_dir: &Path, project: &Path) -> Result<ImportOutcome, Imp
             "run `{run_id}` is not finalized"
         )));
     }
-    let verified_files = source_store.verify_integrity()?;
 
+    // Parse and validate manifest paths before asking the existing store
+    // verifier to resolve any path from an untrusted manifest. This prevents
+    // a hostile `../` entry from making integrity verification read outside
+    // the supplied run directory.
     let manifest_path = source.join("bundle.json");
     let manifest_bytes = fs::read(&manifest_path).map_err(|source| ImportError::Io {
         path: manifest_path.clone(),
@@ -148,6 +165,8 @@ fn import_bundle(bundle_dir: &Path, project: &Path) -> Result<ImportOutcome, Imp
             source,
         })?;
     validate_manifest_paths(&manifest)?;
+
+    let verified_files = source_store.verify_integrity()?;
     let bundle_digest = Digest::sha256_hex(&manifest_bytes).value;
 
     let runs_dir = project.join(".scirust-verify").join("runs");
@@ -177,7 +196,12 @@ fn import_bundle(bundle_dir: &Path, project: &Path) -> Result<ImportOutcome, Imp
             path: stage_run.clone(),
             source,
         })?;
-        for rel in manifest.files.keys().map(String::as_str).chain(["bundle.json"]) {
+        for rel in manifest
+            .files
+            .keys()
+            .map(String::as_str)
+            .chain(["bundle.json"])
+        {
             copy_regular_file(&source, &stage_run, rel)?;
         }
 
@@ -194,12 +218,11 @@ fn import_bundle(bundle_dir: &Path, project: &Path) -> Result<ImportOutcome, Imp
                 "staged dossier file count changed: source {verified_files}, staged {staged_count}"
             )));
         }
-        let staged_bundle = fs::read(stage_run.join("bundle.json")).map_err(|source| {
-            ImportError::Io {
+        let staged_bundle =
+            fs::read(stage_run.join("bundle.json")).map_err(|source| ImportError::Io {
                 path: stage_run.join("bundle.json"),
                 source,
-            }
-        })?;
+            })?;
         if Digest::sha256_hex(&staged_bundle).value != bundle_digest {
             return Err(ImportError::InvalidSource(
                 "bundle.json changed while evidence was being imported".into(),
@@ -226,6 +249,12 @@ fn import_bundle(bundle_dir: &Path, project: &Path) -> Result<ImportOutcome, Imp
 }
 
 fn validate_manifest_paths(manifest: &BundleManifest) -> Result<(), ImportError> {
+    if manifest.schema_version > SCHEMA_VERSION {
+        return Err(ImportError::InvalidSource(format!(
+            "bundle uses unsupported schema version {} (supported: <= {SCHEMA_VERSION})",
+            manifest.schema_version
+        )));
+    }
     if manifest.algorithm != "sha256" {
         return Err(ImportError::InvalidSource(format!(
             "unsupported bundle digest algorithm `{}`",
@@ -325,7 +354,7 @@ fn reject_symlinks(root: &Path, dir: &Path) -> Result<(), ImportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scirust_verify_model::{RunId, SCHEMA_VERSION, TOOL_IDENTITY};
+    use scirust_verify_model::{RunId, TOOL_IDENTITY};
     use scirust_verify_store::RunDocument;
     use std::collections::BTreeMap;
 
@@ -420,7 +449,9 @@ mod tests {
             sealed_by: TOOL_IDENTITY.into(),
             files: BTreeMap::new(),
         };
-        manifest.files.insert("../escape".into(), "00".repeat(32));
+        manifest
+            .files
+            .insert("../escape".into(), "00".repeat(32));
         let error = validate_manifest_paths(&manifest).expect_err("traversal must fail");
         assert!(error.to_string().contains("unsafe sealed path"));
     }
@@ -437,7 +468,9 @@ mod tests {
 
         let error = import_bundle(&source, &project).expect_err("symlink must fail");
         assert!(error.to_string().contains("symbolic link"));
-        assert!(!project.join(".scirust-verify/runs/run-remote-symlink").exists());
+        assert!(!project
+            .join(".scirust-verify/runs/run-remote-symlink")
+            .exists());
 
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(project);
@@ -454,7 +487,10 @@ mod tests {
 
         let error = import_bundle(&source, &project).expect_err("collision must fail");
         assert!(error.to_string().contains("never overwrite"));
-        assert_eq!(fs::read(existing.join("sentinel")).expect("read sentinel"), b"keep");
+        assert_eq!(
+            fs::read(existing.join("sentinel")).expect("read sentinel"),
+            b"keep"
+        );
 
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(project);
