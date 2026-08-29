@@ -336,10 +336,7 @@ fn validate_run_document(run: &RunDocument, expected_id: &str) -> Result<(), Tra
         )));
     }
     if run.state != RunState::Finalized {
-        return Err(integrity(format!(
-            "run `{}` is not finalized",
-            run.run_id
-        )));
+        return Err(integrity(format!("run `{}` is not finalized", run.run_id)));
     }
     if run.run_id.as_str() != expected_id {
         return Err(integrity(format!(
