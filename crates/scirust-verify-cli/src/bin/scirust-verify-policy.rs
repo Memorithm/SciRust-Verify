@@ -1,9 +1,7 @@
 //! Evaluate a finalized evidence dossier against a declarative JSON policy.
 //!
-//! Policy evaluation is deliberately separate from scientific verification:
-//! this binary never rewrites claim verdicts and never upgrades empirical
-//! evidence into a stronger claim. It answers only whether the already sealed
-//! claim evaluations satisfy caller-supplied acceptance rules.
+//! This evaluator never rewrites scientific verdicts. It only decides whether
+//! integrity-verified recorded claim evaluations satisfy caller-supplied rules.
 
 #![deny(missing_docs)]
 
@@ -60,20 +58,14 @@ fn default_min_matches() -> usize {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PolicyRule {
-    /// Stable label used in policy-evaluation output.
     id: String,
-    /// Claim id to match exactly or by substring.
     claim: String,
-    /// How `claim` is matched against recorded claim ids.
     #[serde(default = "default_match_mode")]
     match_mode: MatchMode,
-    /// Verdicts accepted by this policy rule. Defaults to VERIFIED only.
     #[serde(default = "default_allowed_verdicts")]
     allowed_verdicts: Vec<Verdict>,
-    /// Minimum number of matching recorded evaluations required.
     #[serde(default = "default_min_matches")]
     min_matches: usize,
-    /// Optional upper bound on matching evaluations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_matches: Option<usize>,
 }
@@ -127,8 +119,14 @@ struct PolicyOutcome {
 enum PolicyError {
     InvalidPolicy(String),
     Evidence(String),
-    Io { path: PathBuf, source: std::io::Error },
-    Json { path: PathBuf, source: serde_json::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Json {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 impl PolicyError {
@@ -159,29 +157,7 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     match execute(&cli.run, &cli.policy, &cli.project) {
         Ok(outcome) => {
-            if cli.json {
-                match serde_json::to_string_pretty(&outcome) {
-                    Ok(json) => println!("{json}"),
-                    Err(error) => {
-                        eprintln!("error: failed to serialize policy result: {error}");
-                        return std::process::ExitCode::from(3);
-                    }
-                }
-            } else {
-                println!("run               : {}", outcome.run_id);
-                println!("policy sha256     : {}", outcome.policy_sha256);
-                println!("bundle files      : {}", outcome.verified_bundle_files);
-                println!("policy status     : {}", outcome.status);
-                for rule in &outcome.rules {
-                    println!(
-                        "rule {:<20} : {} ({} match(es))",
-                        rule.id,
-                        if rule.satisfied { "SATISFIED" } else { "NOT_SATISFIED" },
-                        rule.matched
-                    );
-                }
-                println!("trust boundary    : {}", outcome.trust_boundary);
-            }
+            print_outcome(&outcome, cli.json);
             if outcome.satisfied {
                 std::process::ExitCode::SUCCESS
             } else {
@@ -193,6 +169,34 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::from(error.exit_code())
         }
     }
+}
+
+fn print_outcome(outcome: &PolicyOutcome, json: bool) {
+    if json {
+        match serde_json::to_string_pretty(outcome) {
+            Ok(document) => println!("{document}"),
+            Err(error) => eprintln!("error: failed to serialize policy result: {error}"),
+        }
+        return;
+    }
+
+    println!("run               : {}", outcome.run_id);
+    println!("policy sha256     : {}", outcome.policy_sha256);
+    println!("bundle files      : {}", outcome.verified_bundle_files);
+    println!("policy status     : {}", outcome.status);
+    for rule in &outcome.rules {
+        println!(
+            "rule {:<20} : {} ({} match(es))",
+            rule.id,
+            if rule.satisfied {
+                "SATISFIED"
+            } else {
+                "NOT_SATISFIED"
+            },
+            rule.matched
+        );
+    }
+    println!("trust boundary    : {}", outcome.trust_boundary);
 }
 
 fn execute(run_id: &str, policy_path: &Path, project: &Path) -> Result<PolicyOutcome, PolicyError> {
@@ -232,12 +236,12 @@ fn execute(run_id: &str, policy_path: &Path, project: &Path) -> Result<PolicyOut
         )));
     }
 
-    let evaluations_text = store.read_text("evaluations.json").map_err(|error| {
+    let text = store.read_text("evaluations.json").map_err(|error| {
         PolicyError::Evidence(format!(
             "run `{run_id}` has no usable sealed evaluations document: {error}"
         ))
     })?;
-    let evaluations = parse_evaluations(&evaluations_text)?;
+    let evaluations = parse_evaluations(&text)?;
     let rules = evaluate_policy(&policy, &evaluations);
     let satisfied = rules.iter().all(|rule| rule.satisfied);
 
@@ -246,7 +250,11 @@ fn execute(run_id: &str, policy_path: &Path, project: &Path) -> Result<PolicyOut
         run_id: run_id.to_owned(),
         policy_sha256: Digest::sha256_hex(&policy_bytes).value,
         verified_bundle_files,
-        status: if satisfied { "satisfied" } else { "not_satisfied" },
+        status: if satisfied {
+            "satisfied"
+        } else {
+            "not_satisfied"
+        },
         satisfied,
         rules,
         trust_boundary: "policy satisfaction over integrity-verified recorded claim evaluations only; this does not strengthen or replace their original verification semantics",
@@ -297,13 +305,14 @@ fn validate_policy(policy: &PolicyDocument) -> Result<(), PolicyError> {
                 rule.id
             )));
         }
-        if let Some(max_matches) = rule.max_matches {
-            if max_matches < rule.min_matches {
-                return Err(PolicyError::InvalidPolicy(format!(
-                    "policy rule `{}` has max_matches < min_matches",
-                    rule.id
-                )));
-            }
+        if let Some(max_matches) = rule
+            .max_matches
+            .filter(|max_matches| *max_matches < rule.min_matches)
+        {
+            return Err(PolicyError::InvalidPolicy(format!(
+                "policy rule `{}` has max_matches {max_matches} < min_matches {}",
+                rule.id, rule.min_matches
+            )));
         }
     }
     Ok(())
@@ -320,87 +329,88 @@ fn parse_evaluations(text: &str) -> Result<Vec<RecordedEvaluation>, PolicyError>
             PolicyError::Evidence("sealed evaluations.json has no evaluations array".into())
         })?;
 
-    let mut evaluations = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let value = entry.get("evaluation").cloned().ok_or_else(|| {
-            PolicyError::Evidence("evaluation entry is missing `evaluation`".into())
-        })?;
-        let evaluation: ClaimEvaluation = serde_json::from_value(value).map_err(|error| {
-            PolicyError::Evidence(format!("invalid sealed claim evaluation: {error}"))
-        })?;
-        evaluations.push(RecordedEvaluation {
-            claim_id: evaluation.claim_id.as_str().to_owned(),
-            verdict: evaluation.verdict,
-        });
-    }
-    Ok(evaluations)
+    entries
+        .iter()
+        .map(|entry| {
+            let value = entry.get("evaluation").cloned().ok_or_else(|| {
+                PolicyError::Evidence("evaluation entry is missing `evaluation`".into())
+            })?;
+            let evaluation: ClaimEvaluation = serde_json::from_value(value).map_err(|error| {
+                PolicyError::Evidence(format!("invalid sealed claim evaluation: {error}"))
+            })?;
+            Ok(RecordedEvaluation {
+                claim_id: evaluation.claim_id.as_str().to_owned(),
+                verdict: evaluation.verdict,
+            })
+        })
+        .collect()
 }
 
-fn evaluate_policy(
-    policy: &PolicyDocument,
-    evaluations: &[RecordedEvaluation],
-) -> Vec<RuleResult> {
+fn evaluate_policy(policy: &PolicyDocument, evaluations: &[RecordedEvaluation]) -> Vec<RuleResult> {
     policy
         .rules
         .iter()
-        .map(|rule| {
-            let matching: Vec<_> = evaluations
-                .iter()
-                .filter(|evaluation| match rule.match_mode {
-                    MatchMode::Exact => evaluation.claim_id == rule.claim,
-                    MatchMode::Contains => evaluation.claim_id.contains(&rule.claim),
-                })
-                .collect();
-
-            let mut reasons = Vec::new();
-            if matching.len() < rule.min_matches {
-                reasons.push(format!(
-                    "found {} matching evaluation(s), policy requires at least {}",
-                    matching.len(),
-                    rule.min_matches
-                ));
-            }
-            if let Some(max_matches) = rule.max_matches {
-                if matching.len() > max_matches {
-                    reasons.push(format!(
-                        "found {} matching evaluation(s), policy allows at most {max_matches}",
-                        matching.len()
-                    ));
-                }
-            }
-            for evaluation in &matching {
-                if !rule.allowed_verdicts.contains(&evaluation.verdict) {
-                    reasons.push(format!(
-                        "claim `{}` has verdict {}, which is not accepted by this rule",
-                        evaluation.claim_id, evaluation.verdict
-                    ));
-                }
-            }
-
-            RuleResult {
-                id: rule.id.clone(),
-                claim: rule.claim.clone(),
-                match_mode: rule.match_mode,
-                allowed_verdicts: rule
-                    .allowed_verdicts
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-                min_matches: rule.min_matches,
-                max_matches: rule.max_matches,
-                matched: matching.len(),
-                satisfied: reasons.is_empty(),
-                matches: matching
-                    .into_iter()
-                    .map(|evaluation| MatchRecord {
-                        claim_id: evaluation.claim_id.clone(),
-                        verdict: evaluation.verdict.to_string(),
-                    })
-                    .collect(),
-                reasons,
-            }
-        })
+        .map(|rule| evaluate_rule(rule, evaluations))
         .collect()
+}
+
+fn evaluate_rule(rule: &PolicyRule, evaluations: &[RecordedEvaluation]) -> RuleResult {
+    let matching: Vec<_> = evaluations
+        .iter()
+        .filter(|evaluation| match rule.match_mode {
+            MatchMode::Exact => evaluation.claim_id == rule.claim,
+            MatchMode::Contains => evaluation.claim_id.contains(&rule.claim),
+        })
+        .collect();
+
+    let mut reasons = Vec::new();
+    if matching.len() < rule.min_matches {
+        reasons.push(format!(
+            "found {} matching evaluation(s), policy requires at least {}",
+            matching.len(),
+            rule.min_matches
+        ));
+    }
+    if let Some(max_matches) = rule
+        .max_matches
+        .filter(|max_matches| matching.len() > *max_matches)
+    {
+        reasons.push(format!(
+            "found {} matching evaluation(s), policy allows at most {max_matches}",
+            matching.len()
+        ));
+    }
+    for evaluation in &matching {
+        if !rule.allowed_verdicts.contains(&evaluation.verdict) {
+            reasons.push(format!(
+                "claim `{}` has verdict {}, which is not accepted by this rule",
+                evaluation.claim_id, evaluation.verdict
+            ));
+        }
+    }
+
+    RuleResult {
+        id: rule.id.clone(),
+        claim: rule.claim.clone(),
+        match_mode: rule.match_mode,
+        allowed_verdicts: rule
+            .allowed_verdicts
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        min_matches: rule.min_matches,
+        max_matches: rule.max_matches,
+        matched: matching.len(),
+        satisfied: reasons.is_empty(),
+        matches: matching
+            .into_iter()
+            .map(|evaluation| MatchRecord {
+                claim_id: evaluation.claim_id.clone(),
+                verdict: evaluation.verdict.to_string(),
+            })
+            .collect(),
+        reasons,
+    }
 }
 
 #[cfg(test)]
@@ -438,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_claim_is_not_relabelled_or_accepted() {
+    fn failed_claim_is_preserved_and_rejected() {
         let result = evaluate_policy(
             &policy(vec![rule("tests", "tests_pass@cargo")]),
             &[RecordedEvaluation {
@@ -458,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn contains_selector_requires_all_matching_verdicts_to_be_allowed() {
+    fn one_not_verified_match_prevents_satisfaction() {
         let mut selected = rule("numeric", "numerically_close");
         selected.match_mode = MatchMode::Contains;
         selected.min_matches = 2;
@@ -476,7 +486,10 @@ mod tests {
             ],
         );
         assert!(!result[0].satisfied);
-        assert!(result[0].reasons.iter().any(|reason| reason.contains("NOT_VERIFIED")));
+        assert!(result[0]
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("NOT_VERIFIED")));
     }
 
     #[test]
@@ -492,7 +505,7 @@ mod tests {
         selected.min_matches = 2;
         selected.max_matches = Some(1);
         let error = validate_policy(&policy(vec![selected])).expect_err("bounds must fail");
-        assert!(error.to_string().contains("max_matches < min_matches"));
+        assert!(error.to_string().contains("max_matches 1 < min_matches 2"));
     }
 
     #[test]
