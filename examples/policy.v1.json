@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "tests",
+      "claim": "tests_pass@cargo",
+      "match_mode": "exact",
+      "allowed_verdicts": ["verified"],
+      "min_matches": 1,
+      "max_matches": 1
+    },
+    {
+      "id": "formatting",
+      "claim": "fmt_clean@cargo",
+      "match_mode": "exact",
+      "allowed_verdicts": ["verified"],
+      "min_matches": 1,
+      "max_matches": 1
+    }
+  ]
+}
