@@ -1,8 +1,7 @@
 //! Deterministic single-file transport for finalized SciRust-Verify dossiers.
 //!
-//! The transport is an envelope around an existing integrity-sealed dossier.
-//! It does not create new verification evidence and does not imply signer,
-//! producer, remote-host, or transport trust.
+//! The envelope preserves existing sealed bytes. It creates no evidence and
+//! establishes no signer, producer, remote-host, or scientific trust.
 
 #![deny(missing_docs)]
 
@@ -20,13 +19,14 @@ const MAGIC: &[u8; 8] = b"SVTR\0\0\0\x01";
 const MAX_FILES: usize = 10_000;
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_TOTAL_BYTES: u64 = 1_073_741_824;
+const MAX_TRANSPORT_BYTES: u64 = MAX_TOTAL_BYTES + 64 * 1024 * 1024;
 const MEDIA_TYPE: &str = "application/vnd.scirust.verify-dossier-transport.v1";
 
 #[derive(Parser)]
 #[command(
     name = "scirust-verify-transport",
     version,
-    about = "Pack or unpack an integrity-sealed SciRust-Verify dossier as one deterministic file"
+    about = "Pack or unpack one sealed SciRust-Verify dossier as a deterministic file"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -45,15 +45,15 @@ enum Command {
         /// Project containing `.scirust-verify/runs`.
         #[arg(long, default_value = ".")]
         project: PathBuf,
-        /// Destination transport file. Existing files are never overwritten.
+        /// Destination file; never overwritten.
         #[arg(long)]
         output: PathBuf,
     },
-    /// Unpack one transport file into a project's run store.
+    /// Unpack a transport file into a project's run store.
     Unpack {
         /// Transport file produced by `pack`.
         input: PathBuf,
-        /// Project receiving `.scirust-verify/runs/<run-id>`.
+        /// Project receiving the run.
         #[arg(long, default_value = ".")]
         project: PathBuf,
     },
@@ -119,7 +119,6 @@ fn main() -> std::process::ExitCode {
         } => pack(&run, &project, &output),
         Command::Unpack { input, project } => unpack(&input, &project),
     };
-
     match result {
         Ok(outcome) => {
             print_outcome(&outcome, cli.json);
@@ -151,39 +150,30 @@ fn print_outcome(outcome: &Outcome, json: bool) {
 }
 
 fn pack(run_id: &str, project: &Path, output: &Path) -> Result<Outcome, TransportError> {
-    if output.exists() {
-        return Err(TransportError::Invalid(format!(
-            "destination `{}` already exists; transport export never overwrites",
-            output.display()
-        )));
-    }
-
-    let runs = RunsRoot::new(project.join(".scirust-verify").join("runs"));
-    let store = runs.open(run_id).map_err(|error| {
-        TransportError::Integrity(format!("run `{run_id}` is not available: {error}"))
-    })?;
+    let store = RunsRoot::new(project.join(".scirust-verify/runs"))
+        .open(run_id)
+        .map_err(|error| integrity(format!("run `{run_id}` is not available: {error}")))?;
     store.verify_integrity().map_err(|error| {
-        TransportError::Integrity(format!(
+        integrity(format!(
             "run `{run_id}` failed dossier integrity verification: {error}"
         ))
     })?;
-    let run_doc = store.read_run_document().map_err(|error| {
-        TransportError::Integrity(format!("run `{run_id}` metadata is unusable: {error}"))
-    })?;
+    let run_doc = store
+        .read_run_document()
+        .map_err(|error| integrity(format!("run `{run_id}` metadata is unusable: {error}")))?;
     if run_doc.state != RunState::Finalized || run_doc.run_id.as_str() != run_id {
-        return Err(TransportError::Integrity(format!(
+        return Err(integrity(format!(
             "run `{run_id}` is not a finalized identity-matching dossier"
         )));
     }
 
     let bundle_path = store.path().join("bundle.json");
     let bundle_bytes = read_bounded(&bundle_path, MAX_TOTAL_BYTES)?;
-    let manifest: BundleManifest = serde_json::from_slice(&bundle_bytes).map_err(|source| {
-        TransportError::Json {
+    let manifest: BundleManifest =
+        serde_json::from_slice(&bundle_bytes).map_err(|source| TransportError::Json {
             path: bundle_path.clone(),
             source,
-        }
-    })?;
+        })?;
     validate_manifest(&manifest)?;
 
     let mut paths: Vec<String> = manifest.files.keys().cloned().collect();
@@ -191,71 +181,56 @@ fn pack(run_id: &str, project: &Path, output: &Path) -> Result<Outcome, Transpor
     paths.sort();
     paths.dedup();
     if paths.len() > MAX_FILES {
-        return Err(TransportError::Invalid(format!(
+        return Err(invalid(format!(
             "transport contains {} files, limit is {MAX_FILES}",
             paths.len()
         )));
     }
 
-    let mut entries = Vec::with_capacity(paths.len());
     let mut total = 0u64;
-    for rel in &paths {
-        validate_relative_path(rel)?;
-        let path = store.path().join(rel);
-        let metadata = fs::symlink_metadata(&path).map_err(|source| TransportError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        if !metadata.file_type().is_file() {
-            return Err(TransportError::Invalid(format!(
-                "sealed path `{rel}` is not a regular file"
-            )));
-        }
+    let mut entries = Vec::with_capacity(paths.len());
+    for rel in paths {
+        validate_relative_path(&rel)?;
+        let path = store.path().join(&rel);
+        require_regular_file(&path)?;
         let bytes = read_bounded(&path, MAX_TOTAL_BYTES.saturating_sub(total))?;
         total = total
             .checked_add(bytes.len() as u64)
-            .ok_or_else(|| TransportError::Invalid("transport size overflow".into()))?;
+            .ok_or_else(|| invalid("transport payload size overflow"))?;
         if total > MAX_TOTAL_BYTES {
-            return Err(TransportError::Invalid(format!(
+            return Err(invalid(format!(
                 "transport payload exceeds {MAX_TOTAL_BYTES} bytes"
             )));
         }
-        if rel == "bundle.json" {
-            if bytes != bundle_bytes {
-                return Err(TransportError::Integrity(
-                    "bundle.json changed during transport packing".into(),
-                ));
-            }
-        } else {
-            let expected = manifest.files.get(rel).expect("path sourced from manifest");
-            let actual = Digest::sha256_hex(&bytes).value;
-            if &actual != expected {
-                return Err(TransportError::Integrity(format!(
-                    "sealed file `{rel}` changed during transport packing"
-                )));
-            }
-        }
-        entries.push((rel.clone(), bytes));
+        verify_entry_bytes(&rel, &bytes, &bundle_bytes, &manifest)?;
+        entries.push((rel, bytes));
     }
 
-    if let Some(parent) = output.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        fs::create_dir_all(parent).map_err(|source| TransportError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
     }
     let tmp = temporary_sibling(output);
-    let write_result = write_transport(&tmp, &entries);
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&tmp);
-        return Err(error);
-    }
-    fs::rename(&tmp, output).map_err(|source| TransportError::Io {
-        path: output.to_path_buf(),
-        source,
-    })?;
+    let result = (|| {
+        write_transport(&tmp, &entries)?;
+        fs::hard_link(&tmp, output).map_err(|source| {
+            if output.exists() {
+                invalid(format!(
+                    "destination `{}` already exists; transport export never overwrites",
+                    output.display()
+                ))
+            } else {
+                io_error(output, source)
+            }
+        })?;
+        Ok(())
+    })();
+    let _ = fs::remove_file(&tmp);
+    result?;
 
-    let transport_bytes = read_bounded(output, MAX_TOTAL_BYTES + 64 * 1024 * 1024)?;
+    let transport_bytes = read_bounded(output, MAX_TRANSPORT_BYTES)?;
     Ok(Outcome {
         operation: "pack",
         run_id: run_id.to_owned(),
@@ -268,91 +243,83 @@ fn pack(run_id: &str, project: &Path, output: &Path) -> Result<Outcome, Transpor
     })
 }
 
+fn verify_entry_bytes(
+    rel: &str,
+    bytes: &[u8],
+    bundle_bytes: &[u8],
+    manifest: &BundleManifest,
+) -> Result<(), TransportError> {
+    if rel == "bundle.json" {
+        if bytes != bundle_bytes {
+            return Err(integrity("bundle.json changed during transport packing"));
+        }
+        return Ok(());
+    }
+    let expected = manifest
+        .files
+        .get(rel)
+        .ok_or_else(|| integrity(format!("unsealed file `{rel}` selected for packing")))?;
+    let actual = Digest::sha256_hex(bytes).value;
+    if &actual != expected {
+        return Err(integrity(format!(
+            "sealed file `{rel}` changed during transport packing"
+        )));
+    }
+    Ok(())
+}
+
 fn unpack(input: &Path, project: &Path) -> Result<Outcome, TransportError> {
-    let transport_bytes = read_bounded(input, MAX_TOTAL_BYTES + 64 * 1024 * 1024)?;
+    let transport_bytes = read_bounded(input, MAX_TRANSPORT_BYTES)?;
     let transport_sha256 = Digest::sha256_hex(&transport_bytes).value;
     let entries = parse_transport(&transport_bytes)?;
     let payload_bytes = entries
         .values()
         .map(|bytes| bytes.len() as u64)
         .sum::<u64>();
-
-    let run_bytes = entries
-        .get("run.json")
-        .ok_or_else(|| TransportError::Invalid("transport has no run.json".into()))?;
-    let run_doc: RunDocument = serde_json::from_slice(run_bytes).map_err(|source| {
-        TransportError::Json {
-            path: PathBuf::from("run.json"),
-            source,
-        }
-    })?;
+    let run_doc = parse_run_document(&entries)?;
     if run_doc.state != RunState::Finalized {
-        return Err(TransportError::Integrity(format!(
+        return Err(integrity(format!(
             "transported run `{}` is not finalized",
             run_doc.run_id
         )));
     }
     let run_id = run_doc.run_id.as_str().to_owned();
 
-    let runs_dir = project.join(".scirust-verify").join("runs");
-    fs::create_dir_all(&runs_dir).map_err(|source| TransportError::Io {
-        path: runs_dir.clone(),
-        source,
-    })?;
+    let runs_dir = project.join(".scirust-verify/runs");
+    fs::create_dir_all(&runs_dir).map_err(|source| io_error(&runs_dir, source))?;
     let destination = runs_dir.join(&run_id);
     if destination.exists() {
-        return Err(TransportError::Invalid(format!(
+        return Err(invalid(format!(
             "destination run `{run_id}` already exists; transport import never overwrites evidence"
         )));
     }
 
-    let stage_root = runs_dir.join(format!(
-        ".transport-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
+    let stage_root = runs_dir.join(unique_name(".transport"));
     let stage_run = stage_root.join(&run_id);
     let result = (|| {
-        fs::create_dir_all(&stage_run).map_err(|source| TransportError::Io {
-            path: stage_run.clone(),
-            source,
-        })?;
-        for (rel, bytes) in &entries {
-            let target = stage_run.join(rel);
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent).map_err(|source| TransportError::Io {
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
-            fs::write(&target, bytes).map_err(|source| TransportError::Io {
-                path: target,
-                source,
-            })?;
-        }
-
-        let staged = RunsRoot::new(&stage_root).open(&run_id).map_err(|error| {
-            TransportError::Integrity(format!("staged run identity is invalid: {error}"))
-        })?;
+        fs::create_dir_all(&stage_run).map_err(|source| io_error(&stage_run, source))?;
+        materialize_entries(&stage_run, &entries)?;
+        let staged = RunsRoot::new(&stage_root)
+            .open(&run_id)
+            .map_err(|error| integrity(format!("staged run identity is invalid: {error}")))?;
         let verified = staged.verify_integrity().map_err(|error| {
-            TransportError::Integrity(format!(
+            integrity(format!(
                 "transported dossier failed integrity verification after extraction: {error}"
             ))
         })?;
         if verified + 1 != entries.len() {
-            return Err(TransportError::Integrity(format!(
+            return Err(integrity(format!(
                 "transport contains {} entries but sealed dossier accounts for {}",
                 entries.len(),
                 verified + 1
             )));
         }
-        fs::rename(&stage_run, &destination).map_err(|source| TransportError::Io {
-            path: destination.clone(),
-            source,
-        })?;
+        if destination.exists() {
+            return Err(invalid(format!(
+                "destination run `{run_id}` appeared during import; refusing publication"
+            )));
+        }
+        fs::rename(&stage_run, &destination).map_err(|source| io_error(&destination, source))?;
         Ok(())
     })();
     let _ = fs::remove_dir_all(&stage_root);
@@ -370,24 +337,52 @@ fn unpack(input: &Path, project: &Path) -> Result<Outcome, TransportError> {
     })
 }
 
+fn parse_run_document(entries: &BTreeMap<String, Vec<u8>>) -> Result<RunDocument, TransportError> {
+    let bytes = entries
+        .get("run.json")
+        .ok_or_else(|| invalid("transport has no run.json"))?;
+    serde_json::from_slice(bytes).map_err(|source| TransportError::Json {
+        path: PathBuf::from("run.json"),
+        source,
+    })
+}
+
+fn materialize_entries(
+    root: &Path,
+    entries: &BTreeMap<String, Vec<u8>>,
+) -> Result<(), TransportError> {
+    for (rel, bytes) in entries {
+        validate_relative_path(rel)?;
+        let target = root.join(rel);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
+        }
+        File::options()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .and_then(|mut file| file.write_all(bytes))
+            .map_err(|source| io_error(&target, source))?;
+    }
+    Ok(())
+}
+
 fn validate_manifest(manifest: &BundleManifest) -> Result<(), TransportError> {
     if manifest.algorithm != "sha256" {
-        return Err(TransportError::Invalid(format!(
+        return Err(invalid(format!(
             "unsupported dossier digest algorithm `{}`",
             manifest.algorithm
         )));
     }
     if manifest.files.len() + 1 > MAX_FILES {
-        return Err(TransportError::Invalid(format!(
+        return Err(invalid(format!(
             "dossier contains too many sealed files (limit {MAX_FILES})"
         )));
     }
     for path in manifest.files.keys() {
         validate_relative_path(path)?;
         if path == "bundle.json" {
-            return Err(TransportError::Invalid(
-                "bundle manifest must not seal itself".into(),
-            ));
+            return Err(invalid("bundle manifest must not seal itself"));
         }
     }
     Ok(())
@@ -395,9 +390,7 @@ fn validate_manifest(manifest: &BundleManifest) -> Result<(), TransportError> {
 
 fn validate_relative_path(rel: &str) -> Result<(), TransportError> {
     if rel.is_empty() || rel.len() > MAX_PATH_BYTES || rel.contains('\\') {
-        return Err(TransportError::Invalid(format!(
-            "unsafe transport path `{rel}`"
-        )));
+        return Err(invalid(format!("unsafe transport path `{rel}`")));
     }
     let path = Path::new(rel);
     if path.is_absolute()
@@ -405,46 +398,31 @@ fn validate_relative_path(rel: &str) -> Result<(), TransportError> {
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err(TransportError::Invalid(format!(
-            "unsafe transport path `{rel}`"
-        )));
+        return Err(invalid(format!("unsafe transport path `{rel}`")));
     }
     Ok(())
 }
 
 fn write_transport(path: &Path, entries: &[(String, Vec<u8>)]) -> Result<(), TransportError> {
-    let mut file = File::create_new(path).map_err(|source| TransportError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    file.write_all(MAGIC).map_err(|source| TransportError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let count = u32::try_from(entries.len())
-        .map_err(|_| TransportError::Invalid("too many transport entries".into()))?;
-    file.write_all(&count.to_le_bytes())
-        .map_err(|source| TransportError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let mut file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|source| io_error(path, source))?;
+    file.write_all(MAGIC)
+        .and_then(|()| file.write_all(&(entries.len() as u32).to_le_bytes()))
+        .map_err(|source| io_error(path, source))?;
     for (rel, bytes) in entries {
         validate_relative_path(rel)?;
         let path_len = u16::try_from(rel.len())
-            .map_err(|_| TransportError::Invalid("transport path too long".into()))?;
+            .map_err(|_| invalid("transport path is too long for v1 framing"))?;
         file.write_all(&path_len.to_le_bytes())
             .and_then(|()| file.write_all(rel.as_bytes()))
             .and_then(|()| file.write_all(&(bytes.len() as u64).to_le_bytes()))
             .and_then(|()| file.write_all(bytes))
-            .map_err(|source| TransportError::Io {
-                path: path.to_path_buf(),
-                source,
-            })?;
+            .map_err(|source| io_error(path, source))?;
     }
-    file.sync_all().map_err(|source| TransportError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    file.sync_all().map_err(|source| io_error(path, source))
 }
 
 fn parse_transport(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, TransportError> {
@@ -452,15 +430,13 @@ fn parse_transport(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, TransportE
     let mut magic = [0u8; 8];
     cursor
         .read_exact(&mut magic)
-        .map_err(|_| TransportError::Invalid("truncated transport header".into()))?;
+        .map_err(|_| invalid("truncated transport header"))?;
     if &magic != MAGIC {
-        return Err(TransportError::Invalid(
-            "unsupported or malformed transport magic/version".into(),
-        ));
+        return Err(invalid("unsupported or malformed transport magic/version"));
     }
     let count = read_u32(&mut cursor)? as usize;
     if count == 0 || count > MAX_FILES {
-        return Err(TransportError::Invalid(format!(
+        return Err(invalid(format!(
             "transport file count {count} is outside 1..={MAX_FILES}"
         )));
     }
@@ -468,56 +444,52 @@ fn parse_transport(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, TransportE
     let mut entries = BTreeMap::new();
     let mut total = 0u64;
     for _ in 0..count {
-        let path_len = read_u16(&mut cursor)? as usize;
-        if path_len == 0 || path_len > MAX_PATH_BYTES {
-            return Err(TransportError::Invalid(
-                "transport entry has invalid path length".into(),
-            ));
-        }
-        let mut path_bytes = vec![0u8; path_len];
-        cursor
-            .read_exact(&mut path_bytes)
-            .map_err(|_| TransportError::Invalid("truncated transport path".into()))?;
-        let rel = String::from_utf8(path_bytes)
-            .map_err(|_| TransportError::Invalid("transport path is not UTF-8".into()))?;
-        validate_relative_path(&rel)?;
+        let rel = read_path(&mut cursor)?;
         let len = read_u64(&mut cursor)?;
         total = total
             .checked_add(len)
-            .ok_or_else(|| TransportError::Invalid("transport payload size overflow".into()))?;
+            .ok_or_else(|| invalid("transport payload size overflow"))?;
         if total > MAX_TOTAL_BYTES || len > usize::MAX as u64 {
-            return Err(TransportError::Invalid(format!(
+            return Err(invalid(format!(
                 "transport payload exceeds {MAX_TOTAL_BYTES} bytes"
             )));
         }
         let mut payload = vec![0u8; len as usize];
         cursor
             .read_exact(&mut payload)
-            .map_err(|_| TransportError::Invalid("truncated transport payload".into()))?;
+            .map_err(|_| invalid("truncated transport payload"))?;
         if entries.insert(rel.clone(), payload).is_some() {
-            return Err(TransportError::Invalid(format!(
-                "duplicate transport path `{rel}`"
-            )));
+            return Err(invalid(format!("duplicate transport path `{rel}`")));
         }
     }
     if cursor.position() != bytes.len() as u64 {
-        return Err(TransportError::Invalid(
-            "trailing unframed bytes after transport entries".into(),
-        ));
+        return Err(invalid("trailing unframed bytes after transport entries"));
     }
     if !entries.contains_key("bundle.json") {
-        return Err(TransportError::Invalid(
-            "transport has no bundle.json".into(),
-        ));
+        return Err(invalid("transport has no bundle.json"));
     }
     Ok(entries)
+}
+
+fn read_path(cursor: &mut io::Cursor<&[u8]>) -> Result<String, TransportError> {
+    let path_len = read_u16(cursor)? as usize;
+    if path_len == 0 || path_len > MAX_PATH_BYTES {
+        return Err(invalid("transport entry has invalid path length"));
+    }
+    let mut bytes = vec![0u8; path_len];
+    cursor
+        .read_exact(&mut bytes)
+        .map_err(|_| invalid("truncated transport path"))?;
+    let rel = String::from_utf8(bytes).map_err(|_| invalid("transport path is not UTF-8"))?;
+    validate_relative_path(&rel)?;
+    Ok(rel)
 }
 
 fn read_u16(cursor: &mut io::Cursor<&[u8]>) -> Result<u16, TransportError> {
     let mut bytes = [0u8; 2];
     cursor
         .read_exact(&mut bytes)
-        .map_err(|_| TransportError::Invalid("truncated transport integer".into()))?;
+        .map_err(|_| invalid("truncated transport integer"))?;
     Ok(u16::from_le_bytes(bytes))
 }
 
@@ -525,7 +497,7 @@ fn read_u32(cursor: &mut io::Cursor<&[u8]>) -> Result<u32, TransportError> {
     let mut bytes = [0u8; 4];
     cursor
         .read_exact(&mut bytes)
-        .map_err(|_| TransportError::Invalid("truncated transport integer".into()))?;
+        .map_err(|_| invalid("truncated transport integer"))?;
     Ok(u32::from_le_bytes(bytes))
 }
 
@@ -533,44 +505,63 @@ fn read_u64(cursor: &mut io::Cursor<&[u8]>) -> Result<u64, TransportError> {
     let mut bytes = [0u8; 8];
     cursor
         .read_exact(&mut bytes)
-        .map_err(|_| TransportError::Invalid("truncated transport integer".into()))?;
+        .map_err(|_| invalid("truncated transport integer"))?;
     Ok(u64::from_le_bytes(bytes))
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, TransportError> {
-    let metadata = fs::symlink_metadata(path).map_err(|source| TransportError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    if !metadata.file_type().is_file() {
-        return Err(TransportError::Invalid(format!(
-            "`{}` is not a regular file",
-            path.display()
-        )));
-    }
+    require_regular_file(path)?;
+    let metadata = fs::metadata(path).map_err(|source| io_error(path, source))?;
     if metadata.len() > limit {
-        return Err(TransportError::Invalid(format!(
+        return Err(invalid(format!(
             "`{}` is {} bytes, limit is {limit}",
             path.display(),
             metadata.len()
         )));
     }
-    fs::read(path).map_err(|source| TransportError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    fs::read(path).map_err(|source| io_error(path, source))
+}
+
+fn require_regular_file(path: &Path) -> Result<(), TransportError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if metadata.file_type().is_file() {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "`{}` is not a regular file",
+            path.display()
+        )))
+    }
 }
 
 fn temporary_sibling(path: &Path) -> PathBuf {
-    let suffix = format!(
-        ".tmp-{}-{}",
+    PathBuf::from(format!("{}{}", path.display(), unique_name(".tmp")))
+}
+
+fn unique_name(prefix: &str) -> String {
+    format!(
+        "{prefix}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos()
-    );
-    PathBuf::from(format!("{}{}", path.display(), suffix))
+    )
+}
+
+fn invalid(message: impl Into<String>) -> TransportError {
+    TransportError::Invalid(message.into())
+}
+
+fn integrity(message: impl Into<String>) -> TransportError {
+    TransportError::Integrity(message.into())
+}
+
+fn io_error(path: impl Into<PathBuf>, source: io::Error) -> TransportError {
+    TransportError::Io {
+        path: path.into(),
+        source,
+    }
 }
 
 #[cfg(test)]
@@ -579,14 +570,9 @@ mod tests {
     use scirust_verify_model::{RunId, SCHEMA_VERSION, TOOL_IDENTITY};
 
     fn temp_dir(label: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "scirust-verify-transport-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let path = std::env::temp_dir().join(unique_name(&format!(
+            "scirust-verify-transport-{label}"
+        )));
         fs::create_dir_all(&path).expect("create temp directory");
         path
     }
@@ -633,12 +619,15 @@ mod tests {
         let second = project.join("second.svtr");
         pack("run-transport-deterministic", &project, &first).expect("pack first");
         pack("run-transport-deterministic", &project, &second).expect("pack second");
-        assert_eq!(fs::read(first).expect("first"), fs::read(second).expect("second"));
+        assert_eq!(
+            fs::read(first).expect("first"),
+            fs::read(second).expect("second")
+        );
         let _ = fs::remove_dir_all(project);
     }
 
     #[test]
-    fn round_trip_preserves_original_dossier_bytes_and_seal() {
+    fn round_trip_preserves_bundle_bytes_and_seal() {
         let source = temp_dir("roundtrip-source");
         let destination = temp_dir("roundtrip-destination");
         let original = sealed_run(&source, "run-transport-roundtrip");
@@ -662,30 +651,18 @@ mod tests {
 
     #[test]
     fn parser_rejects_traversal_duplicate_and_trailing_bytes() {
-        let entries = vec![("../escape".to_owned(), b"x".to_vec())];
         let path = temp_dir("bad-path").join("bad.svtr");
-        assert!(write_transport(&path, &entries).is_err());
+        assert!(write_transport(&path, &[("../escape".into(), vec![b'x'])]).is_err());
 
-        let mut raw = Vec::new();
-        raw.extend_from_slice(MAGIC);
-        raw.extend_from_slice(&2u32.to_le_bytes());
-        for _ in 0..2 {
-            raw.extend_from_slice(&10u16.to_le_bytes());
-            raw.extend_from_slice(b"bundle.json");
-            raw.extend_from_slice(&1u64.to_le_bytes());
-            raw.push(b'x');
-        }
-        assert!(parse_transport(&raw).is_err());
+        let duplicate = raw_transport(&[
+            ("bundle.json", b"x"),
+            ("bundle.json", b"y"),
+        ]);
+        assert!(parse_transport(&duplicate).is_err());
 
-        raw.clear();
-        raw.extend_from_slice(MAGIC);
-        raw.extend_from_slice(&1u32.to_le_bytes());
-        raw.extend_from_slice(&10u16.to_le_bytes());
-        raw.extend_from_slice(b"bundle.json");
-        raw.extend_from_slice(&1u64.to_le_bytes());
-        raw.push(b'x');
-        raw.push(b'!');
-        assert!(parse_transport(&raw).is_err());
+        let mut trailing = raw_transport(&[("bundle.json", b"x")]);
+        trailing.push(b'!');
+        assert!(parse_transport(&trailing).is_err());
     }
 
     #[test]
@@ -697,7 +674,7 @@ mod tests {
         pack("run-transport-corrupt", &source, &transport).expect("pack");
         let mut bytes = fs::read(&transport).expect("transport");
         let last = bytes.len() - 1;
-        bytes[last] ^= 0x01;
+        bytes[last] ^= 1;
         fs::write(&transport, bytes).expect("corrupt transport");
         assert!(unpack(&transport, &destination).is_err());
         assert!(!destination
@@ -734,5 +711,18 @@ mod tests {
         let mut bytes = Vec::from(MAGIC.as_slice());
         bytes.extend_from_slice(&((MAX_FILES as u32) + 1).to_le_bytes());
         assert!(parse_transport(&bytes).is_err());
+    }
+
+    fn raw_transport(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for (path, payload) in entries {
+            bytes.extend_from_slice(&(path.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(path.as_bytes());
+            bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(payload);
+        }
+        bytes
     }
 }
