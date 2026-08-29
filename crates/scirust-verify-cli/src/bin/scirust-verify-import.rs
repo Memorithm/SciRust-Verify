@@ -449,9 +449,7 @@ mod tests {
             sealed_by: TOOL_IDENTITY.into(),
             files: BTreeMap::new(),
         };
-        manifest
-            .files
-            .insert("../escape".into(), "00".repeat(32));
+        manifest.files.insert("../escape".into(), "00".repeat(32));
         let error = validate_manifest_paths(&manifest).expect_err("traversal must fail");
         assert!(error.to_string().contains("unsafe sealed path"));
     }
