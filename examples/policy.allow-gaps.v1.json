@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "optional-deny",
+      "claim": "supply_chain_clean@cargo-deny",
+      "match_mode": "exact",
+      "allowed_verdicts": ["verified", "skipped"],
+      "min_matches": 1,
+      "max_matches": 1
+    }
+  ]
+}
