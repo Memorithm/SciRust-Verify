@@ -5,13 +5,13 @@
 
 #![deny(missing_docs)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use scirust_verify_model::Digest;
+use scirust_verify_model::{Digest, SCHEMA_VERSION};
 use scirust_verify_store::{BundleManifest, RunDocument, RunState, RunsRoot};
 use serde::Serialize;
 
@@ -161,11 +161,7 @@ fn pack(run_id: &str, project: &Path, output: &Path) -> Result<Outcome, Transpor
     let run_doc = store
         .read_run_document()
         .map_err(|error| integrity(format!("run `{run_id}` metadata is unusable: {error}")))?;
-    if run_doc.state != RunState::Finalized || run_doc.run_id.as_str() != run_id {
-        return Err(integrity(format!(
-            "run `{run_id}` is not a finalized identity-matching dossier"
-        )));
-    }
+    validate_run_document(&run_doc, run_id)?;
 
     let bundle_path = store.path().join("bundle.json");
     let bundle_bytes = read_bounded(&bundle_path, MAX_TOTAL_BYTES)?;
@@ -259,8 +255,7 @@ fn verify_entry_bytes(
         .files
         .get(rel)
         .ok_or_else(|| integrity(format!("unsealed file `{rel}` selected for packing")))?;
-    let actual = Digest::sha256_hex(bytes).value;
-    if &actual != expected {
+    if &Digest::sha256_hex(bytes).value != expected {
         return Err(integrity(format!(
             "sealed file `{rel}` changed during transport packing"
         )));
@@ -277,13 +272,9 @@ fn unpack(input: &Path, project: &Path) -> Result<Outcome, TransportError> {
         .map(|bytes| bytes.len() as u64)
         .sum::<u64>();
     let run_doc = parse_run_document(&entries)?;
-    if run_doc.state != RunState::Finalized {
-        return Err(integrity(format!(
-            "transported run `{}` is not finalized",
-            run_doc.run_id
-        )));
-    }
     let run_id = run_doc.run_id.as_str().to_owned();
+    validate_run_document(&run_doc, &run_id)?;
+    validate_run_id(&run_id)?;
 
     let runs_dir = project.join(".scirust-verify/runs");
     fs::create_dir_all(&runs_dir).map_err(|source| io_error(&runs_dir, source))?;
@@ -337,6 +328,43 @@ fn unpack(input: &Path, project: &Path) -> Result<Outcome, TransportError> {
     })
 }
 
+fn validate_run_document(run: &RunDocument, expected_id: &str) -> Result<(), TransportError> {
+    if run.schema_version > SCHEMA_VERSION {
+        return Err(invalid(format!(
+            "run uses unsupported schema version {} (supported <= {SCHEMA_VERSION})",
+            run.schema_version
+        )));
+    }
+    if run.state != RunState::Finalized {
+        return Err(integrity(format!(
+            "run `{}` is not finalized",
+            run.run_id
+        )));
+    }
+    if run.run_id.as_str() != expected_id {
+        return Err(integrity(format!(
+            "run identity mismatch: expected `{expected_id}`, found `{}`",
+            run.run_id
+        )));
+    }
+    Ok(())
+}
+
+fn validate_run_id(run_id: &str) -> Result<(), TransportError> {
+    let valid = !run_id.is_empty()
+        && run_id.len() <= 128
+        && run_id != "."
+        && run_id != ".."
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid(format!("unsafe transported run id `{run_id}`")))
+    }
+}
+
 fn parse_run_document(entries: &BTreeMap<String, Vec<u8>>) -> Result<RunDocument, TransportError> {
     let bytes = entries
         .get("run.json")
@@ -368,6 +396,12 @@ fn materialize_entries(
 }
 
 fn validate_manifest(manifest: &BundleManifest) -> Result<(), TransportError> {
+    if manifest.schema_version > SCHEMA_VERSION {
+        return Err(invalid(format!(
+            "bundle uses unsupported schema version {} (supported <= {SCHEMA_VERSION})",
+            manifest.schema_version
+        )));
+    }
     if manifest.algorithm != "sha256" {
         return Err(invalid(format!(
             "unsupported dossier digest algorithm `{}`",
@@ -404,6 +438,9 @@ fn validate_relative_path(rel: &str) -> Result<(), TransportError> {
 }
 
 fn write_transport(path: &Path, entries: &[(String, Vec<u8>)]) -> Result<(), TransportError> {
+    if entries.is_empty() || entries.len() > MAX_FILES {
+        return Err(invalid("transport entry count is outside v1 limits"));
+    }
     let mut file = File::options()
         .write(true)
         .create_new(true)
@@ -449,12 +486,14 @@ fn parse_transport(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>, TransportE
         total = total
             .checked_add(len)
             .ok_or_else(|| invalid("transport payload size overflow"))?;
-        if total > MAX_TOTAL_BYTES || len > usize::MAX as u64 {
+        if total > MAX_TOTAL_BYTES {
             return Err(invalid(format!(
                 "transport payload exceeds {MAX_TOTAL_BYTES} bytes"
             )));
         }
-        let mut payload = vec![0u8; len as usize];
+        let payload_len = usize::try_from(len)
+            .map_err(|_| invalid("transport payload does not fit this platform"))?;
+        let mut payload = vec![0u8; payload_len];
         cursor
             .read_exact(&mut payload)
             .map_err(|_| invalid("truncated transport payload"))?;
@@ -567,12 +606,11 @@ fn io_error(path: impl Into<PathBuf>, source: io::Error) -> TransportError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scirust_verify_model::{RunId, SCHEMA_VERSION, TOOL_IDENTITY};
+    use scirust_verify_model::{RunId, TOOL_IDENTITY};
 
     fn temp_dir(label: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(unique_name(&format!(
-            "scirust-verify-transport-{label}"
-        )));
+        let path =
+            std::env::temp_dir().join(unique_name(&format!("scirust-verify-transport-{label}")));
         fs::create_dir_all(&path).expect("create temp directory");
         path
     }
@@ -654,15 +692,26 @@ mod tests {
         let path = temp_dir("bad-path").join("bad.svtr");
         assert!(write_transport(&path, &[("../escape".into(), vec![b'x'])]).is_err());
 
-        let duplicate = raw_transport(&[
-            ("bundle.json", b"x"),
-            ("bundle.json", b"y"),
-        ]);
+        let duplicate = raw_transport(&[("bundle.json", b"x"), ("bundle.json", b"y")]);
         assert!(parse_transport(&duplicate).is_err());
 
         let mut trailing = raw_transport(&[("bundle.json", b"x")]);
         trailing.push(b'!');
         assert!(parse_transport(&trailing).is_err());
+    }
+
+    #[test]
+    fn unsafe_run_id_is_rejected_before_path_use() {
+        let run = RunDocument {
+            schema_version: SCHEMA_VERSION,
+            run_id: RunId::from_string("../escape"),
+            state: RunState::Finalized,
+            created_at_utc: "2026-08-29T00:00:00Z".into(),
+            finalized_at_utc: Some("2026-08-29T00:00:01Z".into()),
+            replay_of: None,
+            tool_version: TOOL_IDENTITY.into(),
+        };
+        assert!(validate_run_id(run.run_id.as_str()).is_err());
     }
 
     #[test]
