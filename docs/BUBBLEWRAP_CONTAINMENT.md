@@ -40,8 +40,18 @@ The host filesystem outside the project is visible read-only. This limits writes
 
 Network is disabled by default. Dependencies and toolchains therefore need to be available locally. Missing prerequisites must surface as failed/not-verified execution rather than causing an unconstrained retry outside containment.
 
-## Relationship to evidence
+## Relationship to sealed evidence
 
 The launcher adds an execution boundary around the complete `scirust-verify verify` process. Existing dossier verdict semantics remain unchanged: `VERIFIED`, `FAILED`, `NOT_VERIFIED`, `SKIPPED`, and `UNSUPPORTED` are never rewritten by the launcher.
 
-The `SCIRUST_VERIFY_CONTAINMENT` environment marker is intentionally explicit, but the current dossier schema still records the verifier pipeline execution mode independently. Until the core pipeline consumes this marker directly, consumers must not infer a cryptographically bound containment claim from the dossier alone. This launcher is therefore a real containment mechanism with an explicitly documented evidence-binding limitation, not a remote-attestation mechanism.
+When the verifier starts with the recognized marker `SCIRUST_VERIFY_CONTAINMENT=bubblewrap-v1`, its `EnvironmentSnapshot` records a structured `execution_boundary` object with:
+
+- `mechanism = bubblewrap`;
+- `profile = bubblewrap-v1`;
+- `assertion_scope = producer_declared_not_attested`.
+
+`environment.json` is part of the finalized evidence dossier and is covered by `bundle.json`, so later modification of this declaration is detected by normal dossier-integrity verification.
+
+This improves **integrity binding**, not **authenticity**. A caller able to start `scirust-verify` directly can forge the same environment variable. Therefore the sealed field proves only that the finalized dossier contained that producer declaration; it does not independently prove that bubblewrap or the requested namespaces were active. Signer trust, remote-host trust, and kernel-backed attestation remain separate concerns.
+
+Unknown containment-marker values do not create an execution-boundary claim.

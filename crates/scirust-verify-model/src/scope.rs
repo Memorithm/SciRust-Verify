@@ -90,6 +90,21 @@ pub struct ToolchainIdentity {
     pub rustflags: Option<String>,
 }
 
+/// A producer-declared execution boundary captured with the run environment.
+///
+/// This record is provenance, not remote attestation. Once a dossier is
+/// finalized it is integrity-bound by `bundle.json`, but the declaration does
+/// not by itself prove that the named isolation mechanism was actually active.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionBoundary {
+    /// Isolation mechanism family, for example `bubblewrap`.
+    pub mechanism: String,
+    /// Versioned profile identifier, for example `bubblewrap-v1`.
+    pub profile: String,
+    /// What trust can be placed in the declaration itself.
+    pub assertion_scope: String,
+}
+
 /// The full set of conditions under which verification evidence was gathered.
 ///
 /// Every field is optional: checks record what is relevant to them and never
@@ -181,6 +196,11 @@ pub struct EnvironmentSnapshot {
     /// (e.g. `git`, `cargo-deny`), name => version line.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub extra_tools: BTreeMap<String, String>,
+    /// Producer-declared process isolation boundary, when a recognized
+    /// SciRust-Verify launcher supplied one. Integrity binding after sealing
+    /// does not turn this field into a trusted attestation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_boundary: Option<ExecutionBoundary>,
     /// UTC instant the snapshot was taken.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub taken_at_utc: Option<DateTime<Utc>>,
@@ -233,5 +253,22 @@ mod tests {
             ..Default::default()
         };
         assert!(cpu_only.gpu_is_unknown());
+    }
+
+    #[test]
+    fn execution_boundary_roundtrips_without_strengthening_semantics() {
+        let snapshot = EnvironmentSnapshot {
+            execution_boundary: Some(ExecutionBoundary {
+                mechanism: "bubblewrap".into(),
+                profile: "bubblewrap-v1".into(),
+                assertion_scope: "producer_declared_not_attested".into(),
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains("bubblewrap-v1"));
+        assert!(json.contains("producer_declared_not_attested"));
+        let roundtrip: EnvironmentSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip, snapshot);
     }
 }
