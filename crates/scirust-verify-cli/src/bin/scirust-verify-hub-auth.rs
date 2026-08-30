@@ -178,13 +178,13 @@ fn inspection_from_outcome(
         )));
     }
     if outcome.run_id.is_empty()
-        || outcome.authenticated_transport_sha256.len() != 64
-        || outcome.dossier_transport_sha256.len() != 64
         || outcome.key_id.is_empty()
-        || outcome.public_key_fingerprint_sha256.len() != 64
+        || !is_canonical_sha256_hex(&outcome.authenticated_transport_sha256)
+        || !is_canonical_sha256_hex(&outcome.dossier_transport_sha256)
+        || !is_canonical_sha256_hex(&outcome.public_key_fingerprint_sha256)
     {
         return Err(HubAuthError::Invalid(
-            "authenticated transport returned incomplete identity/integrity data".into(),
+            "authenticated transport returned malformed identity/integrity data".into(),
         ));
     }
     if outcome.imported_public_key_trusted {
@@ -206,6 +206,13 @@ fn inspection_from_outcome(
         signer_authorized: false,
         trust_boundary: "the authenticated transport reconstructed an integrity-valid dossier and its detached Ed25519 signature verified under the exact transported public key; this result does not authorize that key, establish signer identity, remote-host trust, trusted time, or strengthen scientific verdicts",
     })
+}
+
+fn is_canonical_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn write_result(
@@ -322,10 +329,36 @@ mod tests {
     }
 
     #[test]
+    fn non_hex_fingerprint_fails_closed() {
+        let mut outcome = valid_outcome();
+        outcome.public_key_fingerprint_sha256 = "z".repeat(64);
+        assert!(inspection_from_outcome(outcome).is_err());
+    }
+
+    #[test]
+    fn non_canonical_digest_fields_fail_closed() {
+        let mut outcome = valid_outcome();
+        outcome.authenticated_transport_sha256 = "AB".repeat(32);
+        assert!(inspection_from_outcome(outcome).is_err());
+
+        let mut outcome = valid_outcome();
+        outcome.dossier_transport_sha256 = "g0".repeat(32);
+        assert!(inspection_from_outcome(outcome).is_err());
+    }
+
+    #[test]
     fn wrong_media_type_is_rejected() {
         let mut outcome = valid_outcome();
         outcome.media_type = "application/octet-stream".into();
         assert!(inspection_from_outcome(outcome).is_err());
+    }
+
+    #[test]
+    fn canonical_sha256_validation_is_exact() {
+        assert!(is_canonical_sha256_hex(&"0123456789abcdef".repeat(4)));
+        assert!(!is_canonical_sha256_hex(&"0123456789ABCDEF".repeat(4)));
+        assert!(!is_canonical_sha256_hex(&"0".repeat(63)));
+        assert!(!is_canonical_sha256_hex(&"0".repeat(65)));
     }
 
     #[test]
