@@ -49,8 +49,8 @@ pub use id::{new_run_id_suffix, ArtifactId, CheckId, ClaimId, EvidenceId, RunId}
 pub use observation::{Observation, ObservedValue};
 pub use provenance::{GitProvenance, ProvenanceDocument, ProvenanceProbe};
 pub use scope::{
-    CpuIdentity, EnvironmentSnapshot, GpuIdentity, HostIdentity, ToolchainIdentity,
-    VerificationScope,
+    CpuIdentity, EnvironmentSnapshot, ExecutionBoundary, GpuIdentity, HostIdentity,
+    ToolchainIdentity, VerificationScope,
 };
 pub use tolerance::Tolerance;
 pub use verdict::{
