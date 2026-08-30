@@ -242,7 +242,7 @@ fn create_temp_project() -> Result<PathBuf, HubAuthError> {
                 .as_nanos()
         );
         let path = base.join(name);
-        match fs::create_dir(&path) {
+        match create_private_directory(&path) {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(source) => return Err(io_error(&path, source)),
@@ -251,6 +251,19 @@ fn create_temp_project() -> Result<PathBuf, HubAuthError> {
     Err(HubAuthError::Invalid(
         "could not allocate a unique temporary Hub authenticated-inspection directory".into(),
     ))
+}
+
+#[cfg(unix)]
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir(path)
 }
 
 fn executable_name(base: &str) -> String {
@@ -323,6 +336,17 @@ mod tests {
         let result = inspection_from_outcome(valid_outcome()).expect("valid outcome");
         assert!(write_result(&path, &result).is_err());
         assert_eq!(fs::read(&path).expect("read result"), b"keep");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_project_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = create_temp_project().expect("temp");
+        let mode = fs::metadata(&root).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
         let _ = fs::remove_dir_all(root);
     }
 }
