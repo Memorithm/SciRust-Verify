@@ -105,9 +105,9 @@ fn execute(run_id: &str, policy_path: &Path, project: &Path) -> Result<BoundaryO
     let store = runs
         .open(run_id)
         .map_err(|error| format!("run `{run_id}` is not available: {error}"))?;
-    let verified_bundle_files = store
-        .verify_integrity()
-        .map_err(|error| format!("run `{run_id}` failed dossier integrity verification: {error}"))?;
+    let verified_bundle_files = store.verify_integrity().map_err(|error| {
+        format!("run `{run_id}` failed dossier integrity verification: {error}")
+    })?;
     let run_doc = store
         .read_run_document()
         .map_err(|error| format!("run `{run_id}` has unusable metadata: {error}"))?;
@@ -167,7 +167,11 @@ fn execute(run_id: &str, policy_path: &Path, project: &Path) -> Result<BoundaryO
         run_id: run_id.to_owned(),
         policy_sha256: Digest::sha256_hex(&policy_bytes).value,
         verified_bundle_files,
-        status: if satisfied { "satisfied" } else { "not_satisfied" },
+        status: if satisfied {
+            "satisfied"
+        } else {
+            "not_satisfied"
+        },
         satisfied,
         observed_mechanism,
         observed_profile,
@@ -210,10 +214,7 @@ mod tests {
         }
     }
 
-    fn reasons_for(
-        policy: &BoundaryPolicy,
-        boundary: Option<ExecutionBoundary>,
-    ) -> Vec<String> {
+    fn reasons_for(policy: &BoundaryPolicy, boundary: Option<ExecutionBoundary>) -> Vec<String> {
         let mut reasons = Vec::new();
         match boundary {
             Some(boundary) => {
