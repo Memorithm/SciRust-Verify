@@ -4,8 +4,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use scirust_verify_model::provenance::{GitProvenance, ProvenanceDocument, ProvenanceProbe};
-use scirust_verify_model::scope::EnvironmentSnapshot;
+use scirust_verify_model::scope::{EnvironmentSnapshot, ExecutionBoundary};
 use scirust_verify_model::Digest;
+
+const CONTAINMENT_ENV: &str = "SCIRUST_VERIFY_CONTAINMENT";
+const BUBBLEWRAP_V1: &str = "bubblewrap-v1";
+const DECLARATION_SCOPE: &str = "producer_declared_not_attested";
 
 /// Captures Git provenance plus structured probes for the given project root.
 ///
@@ -103,6 +107,9 @@ pub fn collect_environment(root: &Path, target_triple: Option<&str>) -> Environm
 
     snap.host.triple = snap.toolchain.host_triple.clone();
     snap.host.cpu.arch = std::env::consts::ARCH.to_owned().into();
+    snap.execution_boundary = declared_execution_boundary(
+        std::env::var(CONTAINMENT_ENV).ok().as_deref(),
+    );
 
     // Extra tools relevant to verification.
     for (name, argv) in [
@@ -122,6 +129,17 @@ pub fn collect_environment(root: &Path, target_triple: Option<&str>) -> Environm
     }
 
     snap
+}
+
+fn declared_execution_boundary(marker: Option<&str>) -> Option<ExecutionBoundary> {
+    match marker {
+        Some(BUBBLEWRAP_V1) => Some(ExecutionBoundary {
+            mechanism: "bubblewrap".to_owned(),
+            profile: BUBBLEWRAP_V1.to_owned(),
+            assertion_scope: DECLARATION_SCOPE.to_owned(),
+        }),
+        _ => None,
+    }
 }
 
 /// Records the effective RUSTFLAGS visible to the run (if any).
@@ -180,6 +198,21 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("rustc"));
+    }
+
+    #[test]
+    fn recognized_containment_marker_becomes_declared_boundary() {
+        let boundary = declared_execution_boundary(Some("bubblewrap-v1")).expect("recognized");
+        assert_eq!(boundary.mechanism, "bubblewrap");
+        assert_eq!(boundary.profile, "bubblewrap-v1");
+        assert_eq!(boundary.assertion_scope, "producer_declared_not_attested");
+    }
+
+    #[test]
+    fn unknown_or_missing_containment_marker_creates_no_boundary_claim() {
+        assert!(declared_execution_boundary(None).is_none());
+        assert!(declared_execution_boundary(Some("bubblewrap-v999")).is_none());
+        assert!(declared_execution_boundary(Some("container")).is_none());
     }
 
     #[test]
