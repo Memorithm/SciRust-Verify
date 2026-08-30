@@ -7,6 +7,7 @@
 
 #![deny(missing_docs)]
 
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +21,8 @@ use serde::Serialize;
 
 const MAGIC: &[u8; 8] = b"SVAT\0\0\0\x01";
 const MEDIA_TYPE: &str = "application/vnd.scirust.verify-authenticated-transport.v1";
-const MAX_INNER_TRANSPORT_BYTES: u64 = 1_137_000_000;
+// Exact v1 `.svtr` maximum: 1 GiB payload + 64 MiB framing allowance.
+const MAX_INNER_TRANSPORT_BYTES: u64 = 1_140_850_688;
 const MAX_SIGNATURE_BYTES: u64 = 1_048_576;
 const MAX_PUBLIC_KEY_BYTES: u64 = 1_048_576;
 const MAX_ENVELOPE_BYTES: u64 =
@@ -203,23 +205,20 @@ fn pack(
     let signature = read_bounded(signature_path_input, MAX_SIGNATURE_BYTES)?;
     let public_key = read_bounded(public_key_path, MAX_PUBLIC_KEY_BYTES)?;
     let inner_path = temporary_sibling(output, ".inner.svtr");
-    run_transport(&[
-        "--json".into(),
-        "pack".into(),
-        run_id.into(),
-        "--project".into(),
-        project.as_os_str().to_owned(),
-        "--output".into(),
-        inner_path.as_os_str().to_owned(),
-    ])?;
-    let transport = match read_bounded(&inner_path, MAX_INNER_TRANSPORT_BYTES) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            let _ = fs::remove_file(&inner_path);
-            return Err(error);
-        }
-    };
+    let transport_result = (|| {
+        run_transport(&[
+            OsString::from("--json"),
+            OsString::from("pack"),
+            OsString::from(run_id),
+            OsString::from("--project"),
+            project.as_os_str().to_owned(),
+            OsString::from("--output"),
+            inner_path.as_os_str().to_owned(),
+        ])?;
+        read_bounded(&inner_path, MAX_INNER_TRANSPORT_BYTES)
+    })();
     let _ = fs::remove_file(&inner_path);
+    let transport = transport_result?;
 
     let envelope = encode_envelope(&Envelope {
         transport: transport.clone(),
@@ -271,26 +270,27 @@ fn unpack(input: &Path, project: &Path) -> Result<Outcome, AuthTransportError> {
     result
 }
 
-#[allow(clippy::too_many_arguments)]
-fn unpack_staged(
-    stage_project: &Path,
-    stage_transport: &Path,
-    stage_signature: &Path,
-    stage_key: &Path,
-    project: &Path,
-    envelope_bytes: &[u8],
-    transport_bytes: &[u8],
-    input: &Path,
-) -> Result<Outcome, AuthTransportError> {
+struct StagedImport<'a> {
+    stage_project: &'a Path,
+    stage_transport: &'a Path,
+    stage_signature: &'a Path,
+    stage_key: &'a Path,
+    project: &'a Path,
+    envelope_bytes: &'a [u8],
+    transport_bytes: &'a [u8],
+    input: &'a Path,
+}
+
+fn unpack_staged(context: &StagedImport<'_>) -> Result<Outcome, AuthTransportError> {
     run_transport(&[
-        "--json".into(),
-        "unpack".into(),
-        stage_transport.as_os_str().to_owned(),
-        "--project".into(),
-        stage_project.as_os_str().to_owned(),
+        OsString::from("--json"),
+        OsString::from("unpack"),
+        context.stage_transport.as_os_str().to_owned(),
+        OsString::from("--project"),
+        context.stage_project.as_os_str().to_owned(),
     ])?;
 
-    let staged_runs = RunsRoot::new(stage_project.join(".scirust-verify/runs"));
+    let staged_runs = RunsRoot::new(context.stage_project.join(".scirust-verify/runs"));
     let ids = staged_runs
         .list_runs()
         .map_err(|error| integrity(format!("staged transport run listing failed: {error}")))?;
@@ -310,13 +310,13 @@ fn unpack_staged(
         ))
     })?;
 
-    let public = read_public_key(stage_key)
+    let public = read_public_key(context.stage_key)
         .map_err(|error| signature_error(format!("transported public key is invalid: {error}")))?;
     let verification = verify_bundle_signature(
         run_id,
         &staged.path().join("bundle.json"),
-        stage_signature,
-        stage_key,
+        context.stage_signature,
+        context.stage_key,
     )
     .map_err(|error| {
         signature_error(format!(
@@ -329,7 +329,7 @@ fn unpack_staged(
         ));
     }
 
-    let verify_root = project.join(".scirust-verify");
+    let verify_root = context.project.join(".scirust-verify");
     let final_runs = verify_root.join("runs");
     let final_run = final_runs.join(run_id);
     if final_run.exists() {
@@ -351,10 +351,11 @@ fn unpack_staged(
     let key_dir = verify_root.join("imported-public-keys");
     let final_key = key_dir.join(format!("{}.json", public.fingerprint_sha256));
 
-    let key_created = publish_key_material(&final_key, &fs::read(stage_key).map_err(|source| {
-        io_error(stage_key, source)
-    })?)?;
-    let signature_bytes = fs::read(stage_signature).map_err(|source| io_error(stage_signature, source))?;
+    let key_bytes = fs::read(context.stage_key)
+        .map_err(|source| io_error(context.stage_key, source))?;
+    let key_created = publish_key_material(&final_key, &key_bytes)?;
+    let signature_bytes = fs::read(context.stage_signature)
+        .map_err(|source| io_error(context.stage_signature, source))?;
     if let Err(error) = publish_new_file(&final_signature, &signature_bytes) {
         if key_created {
             let _ = fs::remove_file(&final_key);
@@ -374,25 +375,37 @@ fn unpack_staged(
         operation: "unpack",
         run_id: run_id.clone(),
         media_type: MEDIA_TYPE,
-        authenticated_transport_sha256: Digest::sha256_hex(envelope_bytes).value,
-        dossier_transport_sha256: Digest::sha256_hex(transport_bytes).value,
+        authenticated_transport_sha256: Digest::sha256_hex(context.envelope_bytes).value,
+        dossier_transport_sha256: Digest::sha256_hex(context.transport_bytes).value,
         key_id: public.key_id,
         public_key_fingerprint_sha256: public.fingerprint_sha256,
-        path: input.display().to_string(),
+        path: context.input.display().to_string(),
         imported_public_key_trusted: false,
         trust_boundary: "the imported dossier passed its original integrity seal and its detached Ed25519 signature verified under transported public-key bytes; the imported key is deliberately untrusted until an independent local policy authorizes its fingerprint",
     })
 }
 
 fn encode_envelope(envelope: &Envelope) -> Result<Vec<u8>, AuthTransportError> {
-    validate_section_size(envelope.transport.len(), MAX_INNER_TRANSPORT_BYTES, "dossier transport")?;
+    validate_section_size(
+        envelope.transport.len(),
+        MAX_INNER_TRANSPORT_BYTES,
+        "dossier transport",
+    )?;
     validate_section_size(envelope.signature.len(), MAX_SIGNATURE_BYTES, "signature")?;
-    validate_section_size(envelope.public_key.len(), MAX_PUBLIC_KEY_BYTES, "public key")?;
+    validate_section_size(
+        envelope.public_key.len(),
+        MAX_PUBLIC_KEY_BYTES,
+        "public key",
+    )?;
     let mut out = Vec::with_capacity(
         8 + 24 + envelope.transport.len() + envelope.signature.len() + envelope.public_key.len(),
     );
     out.extend_from_slice(MAGIC);
-    for section in [&envelope.transport, &envelope.signature, &envelope.public_key] {
+    for section in [
+        &envelope.transport,
+        &envelope.signature,
+        &envelope.public_key,
+    ] {
         out.extend_from_slice(&(section.len() as u64).to_le_bytes());
         out.extend_from_slice(section);
     }
@@ -410,7 +423,11 @@ fn parse_envelope(bytes: &[u8]) -> Result<Envelope, AuthTransportError> {
             "unsupported or malformed authenticated transport magic/version",
         ));
     }
-    let transport = read_section(&mut cursor, MAX_INNER_TRANSPORT_BYTES, "dossier transport")?;
+    let transport = read_section(
+        &mut cursor,
+        MAX_INNER_TRANSPORT_BYTES,
+        "dossier transport",
+    )?;
     let signature = read_section(&mut cursor, MAX_SIGNATURE_BYTES, "signature")?;
     let public_key = read_section(&mut cursor, MAX_PUBLIC_KEY_BYTES, "public key")?;
     if cursor.position() != bytes.len() as u64 {
@@ -449,11 +466,7 @@ fn read_section(
     Ok(section)
 }
 
-fn validate_section_size(
-    size: usize,
-    limit: u64,
-    label: &str,
-) -> Result<(), AuthTransportError> {
+fn validate_section_size(size: usize, limit: u64, label: &str) -> Result<(), AuthTransportError> {
     if size as u64 > limit {
         Err(invalid(format!(
             "{label} is {size} bytes, limit is {limit}"
@@ -463,9 +476,9 @@ fn validate_section_size(
     }
 }
 
-fn run_transport(args: &[std::ffi::OsString]) -> Result<(), AuthTransportError> {
-    let current = std::env::current_exe()
-        .map_err(|source| io_error("current executable", source))?;
+fn run_transport(args: &[OsString]) -> Result<(), AuthTransportError> {
+    let current =
+        std::env::current_exe().map_err(|source| io_error("current executable", source))?;
     let parent = current
         .parent()
         .ok_or_else(|| invalid("current executable has no parent directory"))?;
@@ -508,7 +521,10 @@ fn publish_key_material(path: &Path, bytes: &[u8]) -> Result<bool, AuthTransport
 }
 
 fn publish_new_file(path: &Path, bytes: &[u8]) -> Result<(), AuthTransportError> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
     }
     File::options()
@@ -553,12 +569,20 @@ fn require_regular_file(path: &Path) -> Result<(), AuthTransportError> {
     if metadata.file_type().is_file() {
         Ok(())
     } else {
-        Err(invalid(format!("`{}` is not a regular file", path.display())))
+        Err(invalid(format!(
+            "`{}` is not a regular file",
+            path.display()
+        )))
     }
 }
 
 fn temporary_sibling(path: &Path, suffix: &str) -> PathBuf {
-    PathBuf::from(format!("{}{}{}", path.display(), suffix, unique_name(".tmp")))
+    PathBuf::from(format!(
+        "{}{}{}",
+        path.display(),
+        suffix,
+        unique_name(".tmp")
+    ))
 }
 
 fn unique_name(prefix: &str) -> String {
