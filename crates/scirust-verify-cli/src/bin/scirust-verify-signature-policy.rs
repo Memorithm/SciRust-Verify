@@ -86,6 +86,7 @@ fn main() -> std::process::ExitCode {
                     "fingerprint       : {}",
                     outcome.public_key_fingerprint_sha256
                 );
+                println!("policy sha256     : {}", outcome.policy_sha256);
                 println!("policy status     : {}", outcome.status);
                 for reason in &outcome.reasons {
                     println!("reason            : {reason}");
