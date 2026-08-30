@@ -14,7 +14,7 @@
 //!   Cargo package name. Never derived from content.
 //! * [`ClaimId`] — the claim kind slug (e.g. `tests_pass`) plus an optional
 //!   instance suffix separated by `@` when multiple claims of one kind exist.
-//! * [`CheckId`] — `<provider>:<slug>[:<index>]` where index disambiguates
+//! * [`CheckId`] — `<provider>:<slug>[:<index>` where index disambiguates
 //!   repeated providers of the same check within a plan. Stable for a given
 //!   manifest + discovery result because planning sorts deterministically.
 //! * [`EvidenceId`] — `ev-<NNNN>` with a zero-padded sequential number
@@ -49,8 +49,8 @@ pub use id::{new_run_id_suffix, ArtifactId, CheckId, ClaimId, EvidenceId, RunId}
 pub use observation::{Observation, ObservedValue};
 pub use provenance::{GitProvenance, ProvenanceDocument, ProvenanceProbe};
 pub use scope::{
-    CpuIdentity, EnvironmentSnapshot, GpuIdentity, HostIdentity, ToolchainIdentity,
-    VerificationScope,
+    CpuIdentity, EnvironmentSnapshot, ExecutionBoundary, GpuIdentity, HostIdentity,
+    ToolchainIdentity, VerificationScope,
 };
 pub use tolerance::Tolerance;
 pub use verdict::{
