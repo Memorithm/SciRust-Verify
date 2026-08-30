@@ -107,9 +107,8 @@ pub fn collect_environment(root: &Path, target_triple: Option<&str>) -> Environm
 
     snap.host.triple = snap.toolchain.host_triple.clone();
     snap.host.cpu.arch = std::env::consts::ARCH.to_owned().into();
-    snap.execution_boundary = declared_execution_boundary(
-        std::env::var(CONTAINMENT_ENV).ok().as_deref(),
-    );
+    snap.execution_boundary =
+        declared_execution_boundary(std::env::var(CONTAINMENT_ENV).ok().as_deref());
 
     // Extra tools relevant to verification.
     for (name, argv) in [
