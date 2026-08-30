@@ -48,8 +48,14 @@ scope"*. It never means:
 
 * universally deterministic across platforms (single-host evidence cannot show that),
 * formally proven (execution evidence is empirical),
-* sandboxed (V0.1 runs commands on your host; see [THREAT_MODEL](docs/THREAT_MODEL.md)),
+* automatically sandboxed — plain `scirust-verify verify` executes on the host;
+  Linux users may explicitly select the separate bubblewrap containment launcher,
 * certified for any regulatory regime (this is not compliance theater).
+
+Containment, dossier signatures, signer policy and transported evidence are
+separate trust mechanisms. None of them upgrades an empirical scientific
+verdict into a formal proof or a universal cross-platform statement. See
+[THREAT_MODEL](docs/THREAT_MODEL.md).
 
 Every report carries a mandatory **Limitations** section derived from the
 bundle itself: dirty worktrees, skipped tools, single-host determinism scope,
@@ -112,6 +118,33 @@ Exit codes: `0` pass/pass-with-gaps · `1` verification not established or
 requested run missing · `2` invalid usage/configuration (bad paths, bad
 manifests) · `3` internal error.
 
+## Host execution versus Linux containment
+
+Plain verification is intentionally explicit about its boundary:
+
+```bash
+scirust-verify verify .
+```
+
+This executes Cargo build scripts, procedural macros, tests and custom commands
+as subprocesses on the host. For an untrusted project on Linux, use the
+opt-in containment launcher instead:
+
+```bash
+scirust-verify-contain /path/to/project
+```
+
+The launcher requires `bubblewrap`, never silently falls back to direct host
+execution, isolates networking and several Linux namespaces, mounts the host
+root read-only, and rebinds only the selected project tree read/write. The
+resulting dossier records the `bubblewrap-v1` execution-boundary declaration in
+sealed `environment.json`.
+
+This is real OS containment, but not a VM, remote attestation or a proof that
+the kernel/bubblewrap stack is uncompromised. Host files outside the project
+remain potentially readable through the read-only root mount. See
+[THREAT_MODEL](docs/THREAT_MODEL.md).
+
 ## Where are evidence dossiers stored?
 
 ```
@@ -168,6 +201,61 @@ sealed evidence directory. Signature files live under
 validity under the **explicitly supplied public key**; it does not by itself
 prove signer identity, key authorization/revocation, or trusted timestamping.
 See [SIGNATURES.md](docs/SIGNATURES.md).
+
+## Machine-readable trust policy
+
+SciRust-Verify keeps different questions separate instead of collapsing them
+into one overloaded "trusted" flag:
+
+```bash
+# Are the selected recorded claims acceptable under this local policy?
+scirust-verify-policy <run-id> --policy claim-policy.json --project . --json
+
+# Does the sealed dossier declare the exact execution boundary required here?
+scirust-verify-boundary-policy <run-id> --policy boundary-policy.json --project . --json
+
+# Is the detached signature valid and is this exact key fingerprint locally authorized?
+scirust-verify-signature-policy <run-id> \
+  --signature /path/to/signature.json \
+  --public-key /path/to/public-key.json \
+  --policy signer-policy.json \
+  --project . \
+  --json
+```
+
+The boundary declaration is producer-declared provenance, not remote
+attestation. Signature validity is distinct from signer authorization. The
+signer policy is an exact local SHA-256 fingerprint allow/revoke decision, not
+PKI identity certification.
+
+## Remote and authenticated evidence transport
+
+The v1 dossier transport moves an integrity-sealed finalized run without
+changing its scientific semantics:
+
+```bash
+scirust-verify-transport --json pack <run-id> --project . --output dossier.svtr
+scirust-verify-transport --json unpack dossier.svtr --project /destination
+```
+
+When detached signature material must travel with the dossier, use the
+separate authenticated wrapper:
+
+```bash
+scirust-verify-auth-transport --json pack <run-id> \
+  --project . \
+  --signature /path/to/signature.json \
+  --public-key /path/to/public-key.json \
+  --output dossier.svat
+
+scirust-verify-auth-transport --json unpack dossier.svat --project /destination
+```
+
+The authenticated wrapper verifies the signature before publishing the
+reconstructed run. The transported public key is stored as **untrusted key
+material**; the recipient must still authorize its fingerprint independently,
+for example with `scirust-verify-signature-policy`. Transport therefore does
+not create a trust root merely by carrying a key alongside a valid signature.
 
 ## Development
 
