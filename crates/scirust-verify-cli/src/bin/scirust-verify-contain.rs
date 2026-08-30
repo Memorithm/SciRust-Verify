@@ -48,12 +48,17 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         return Err("bubblewrap containment is supported only on Linux".into());
     }
 
-    let project = cli
-        .project
-        .canonicalize()
-        .map_err(|error| format!("cannot resolve project `{}`: {error}", cli.project.display()))?;
+    let project = cli.project.canonicalize().map_err(|error| {
+        format!(
+            "cannot resolve project `{}`: {error}",
+            cli.project.display()
+        )
+    })?;
     if !project.is_dir() {
-        return Err(format!("project `{}` is not a directory", project.display()));
+        return Err(format!(
+            "project `{}` is not a directory",
+            project.display()
+        ));
     }
 
     let verifier = sibling_verifier()?;
@@ -153,7 +158,9 @@ mod tests {
         assert!(args.contains(&"--unshare-net".to_owned()));
         assert!(args.contains(&"--ro-bind".to_owned()));
         assert!(args.contains(&"--bind".to_owned()));
-        assert!(args.windows(2).any(|pair| pair == ["CARGO_NET_OFFLINE", "true"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["CARGO_NET_OFFLINE", "true"]));
         assert!(!args.contains(&"--share-net".to_owned()));
     }
 
@@ -168,7 +175,10 @@ mod tests {
             .iter()
             .position(|arg| arg == "--bind")
             .expect("project bind");
-        assert_eq!(&args[bind + 1..=bind + 2], ["/work/project", "/work/project"]);
+        assert_eq!(
+            &args[bind + 1..=bind + 2],
+            ["/work/project", "/work/project"]
+        );
         assert_eq!(args.iter().filter(|arg| *arg == "--bind").count(), 1);
     }
 
@@ -194,6 +204,8 @@ mod tests {
             Path::new("/opt/bin/scirust-verify"),
             &[],
         ));
-        assert!(args.windows(2).any(|pair| pair == ["SCIRUST_VERIFY_CONTAINMENT", CONTAINMENT_ID]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["SCIRUST_VERIFY_CONTAINMENT", CONTAINMENT_ID]));
     }
 }
