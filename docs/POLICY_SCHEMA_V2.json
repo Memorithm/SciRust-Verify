@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "rules": [
+    {
+      "id": "tests",
+      "claim": "tests_pass@cargo",
+      "match_mode": "exact",
+      "allowed_verdicts": ["verified"],
+      "min_matches": 1,
+      "max_matches": 1
+    }
+  ],
+  "execution_boundary": {
+    "mechanism": "bubblewrap",
+    "profile": "bubblewrap-v1",
+    "assertion_scope": "producer_declared_not_attested"
+  }
+}
