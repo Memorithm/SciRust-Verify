@@ -1,132 +1,144 @@
 # Threat Model
 
-Scope: SciRust-Verify V0.1. Read this before verifying any project you do not
-trust.
+Scope: current SciRust-Verify implementation. Read this before verifying any project you do not trust.
 
-## The one-paragraph summary
+## Summary
 
-**SciRust-Verify is not a sandbox.** Running `verify` on a repository
-executes its build scripts, procedural macros, test binaries and custom check
-commands **on your host, with your privileges**. This is identical to running
-`cargo build` or `cargo test` yourself — which is already arbitrary code
-execution. SciRust-Verify's evidence integrity protects the *record* of a
-verification run; it cannot make an untrusted *execution* safe.
+A plain `scirust-verify verify` executes Cargo build scripts, procedural macros, test binaries and custom commands directly on the host with the invoking user's privileges. That path is **not contained**.
+
+For hostile-project execution on Linux, SciRust-Verify also provides the opt-in `scirust-verify-contain` launcher. It uses the real `bubblewrap` isolation mechanism, fails closed when bubblewrap is unavailable, creates separate user/PID/IPC/UTS/network namespaces, mounts the host root read-only, rebinds only the selected project tree read/write, and uses an ephemeral `/tmp`. CI executes this path with real bubblewrap.
+
+This is operating-system containment, not a formal safety proof, VM isolation, remote attestation, or evidence that the kernel/bubblewrap implementation is uncompromised. Host files outside the project remain potentially readable through the read-only root mount. Use a VM or stronger isolation when confidentiality from hostile code is required.
 
 ## Assets
 
-1. **Evidence bundles** — the tamper-evident record of what ran and what was
-   observed.
-2. **Verdict integrity** — the property that verdicts are derived from
-   recorded evidence by documented logic.
-3. **The host** — outside V0.1's protection envelope (see below).
+1. **Evidence dossiers** — the integrity-sealed record of what ran and what was observed.
+2. **Verdict integrity** — verdicts remain derived from recorded evidence under documented semantics.
+3. **Source/artifact/environment identity** — inputs that bind evidence to what was actually evaluated.
+4. **Signer authorization state** — local policy over exact public-key fingerprints, distinct from cryptographic validity.
+5. **The host** — protected only when an explicit containment mechanism is selected; plain `verify` does not protect it.
 
-## Trust levels
+## Execution boundaries
 
-| Subject | Trust level | Rationale |
-|---|---|---|
-| Your own project | trusted | You wrote it; verification adds provenance + scope discipline |
-| A dependency in your lockfile | semi-trusted | Supply-chain checks reduce but do not eliminate risk |
-| A cloned untrusted repository | **untrusted** | Assume hostile code execution during verify |
+### Plain verification
 
-## Threats & mitigations
+`scirust-verify verify` uses direct subprocess execution. Treat an untrusted repository exactly as arbitrary code execution on the host.
 
-### Hostile `build.rs` / proc-macro / test binary
+### Bubblewrap containment
 
-*Threat:* arbitrary code runs with your user privileges during cargo checks.
+`scirust-verify-contain <project>` is an opt-in Linux execution boundary. It never silently falls back to direct host execution.
 
-*Mitigation in V0.1:* none beyond what cargo itself provides. Documented
-loudly here and in the README.
+The produced dossier records a structured `execution_boundary` declaration in sealed `environment.json` using the profile `bubblewrap-v1` and assertion scope `producer_declared_not_attested`. The declaration is integrity-bound after dossier finalization. That proves only that the sealed dossier contains the declaration; it is not cryptographic attestation that the boundary actually ran on an uncompromised host.
 
-*Future:* isolated runners (containers/VMs/remote workers) behind the same
-`CommandSpec → ExecutionRecord` interface. The domain model already supports
-this without redesign (`execution_mode` in scope records exists for exactly
-this reason).
+`scirust-verify-boundary-policy` can fail closed unless a finalized integrity-valid dossier contains the exact boundary declaration required by local policy. Policy satisfaction does not strengthen the scientific verdicts in the dossier.
+
+## Threats and mitigations
+
+### Hostile `build.rs`, proc macro, test binary, or custom command
+
+**Threat:** arbitrary code executes during verification.
+
+**Plain `verify`:** no containment. The process runs with the invoking user's host privileges.
+
+**`scirust-verify-contain`:** bubblewrap namespaces, network isolation, read-only host root, project-only writable bind, fresh `/proc` and `/dev`, and ephemeral `/tmp` provide a real Linux containment boundary.
+
+**Residual:** the project remains writable; the read-only host filesystem can still be readable; kernel/bubblewrap vulnerabilities and host compromise are outside this guarantee. A VM/minimal-root worker is stronger for hostile code.
 
 ### Malicious output volume
 
-*Threat:* a process floods stdout/stderr to exhaust memory or disk.
+**Threat:** a process floods stdout/stderr to exhaust memory or disk.
 
-*Mitigation (implemented):* bounded capture with reader-thread draining;
-limits configurable per manifest; truncation recorded as evidence
-(`stdout_truncated`, `total_bytes`). Tested against multi-megabyte output.
+**Mitigation:** bounded capture with reader-thread draining. Truncation and total byte counts are recorded as evidence rather than hidden.
 
 ### Runaway processes
 
-*Threat:* a check hangs forever.
+**Threat:** a check hangs indefinitely or leaves descendants behind.
 
-*Mitigation (implemented):* mandatory per-check timeouts; expiry kills the
-child and records the distinct `TimedOut` state. Tested.
+**Mitigation:** mandatory timeouts and process-group termination. Timeout remains distinct from a scientific assertion failure.
 
-### Path traversal via attachment paths
+### Path traversal and filesystem tricks
 
-*Threat:* crafted relative paths escape the run directory on write/read.
+**Threat:** crafted attachment or imported evidence paths escape their intended directory.
 
-*Mitigation (implemented):* absolute paths and `..` components rejected at
-every store write/read path. Content-addressed attachment storage avoids
-attacker-controlled filenames for payloads.
+**Mitigation:** store paths reject absolute paths and parent traversal; remote dossier import rejects symlinks/special files and validates sealed paths before publication. Imported evidence is staged, verified, copied and verified again before atomic publication.
 
 ### Symlink escape in source-tree hashing
 
-*Threat:* symlinks smuggle external content into (or out of) source identity.
+**Threat:** symlinks smuggle external content into source identity.
 
-*Mitigation (implemented):* tree hashing records symlinks as links and never
-follows them; excluded directories (.git, target, .scirust-verify,
-node_modules) are skipped.
+**Mitigation:** source-tree hashing records symlinks as links and does not follow them.
 
-### Tampered evidence bundle
+### Tampered evidence dossier
 
-*Threat:* post-hoc modification of logs, digests, verdicts or reports.
+**Threat:** post-hoc modification, deletion or injection of evidence files.
 
-*Mitigations (implemented):*
-* `bundle.json` seals SHA-256 of every file, written atomically last;
-* readers verify all digests and reject missing/unsealed files;
-* plan digest detects plan mutation after execution;
-* attachments carry size+digest verified at finalize and at load;
-* sealed runs refuse store-level mutation.
+**Mitigation:** `bundle.json` seals SHA-256 of every dossier file; readers verify the entire manifest and reject missing, modified or unsealed files. Finalized runs refuse store-level mutation.
 
-*Residual:* anyone with filesystem write access can rebuild the entire bundle
-including `bundle.json`. Sealing detects *accidents and partial tampering*;
-it is not cryptographic authorship. Signed dossiers (with established Rust
-crypto libraries, identified algorithms and key management) are a planned
-extension; unsigned bundles are never labeled signed today.
+**Residual:** integrity sealing alone is not authorship. Anyone with filesystem write access can replace an entire unsigned dossier and recompute its bundle.
 
-### Forged provenance
+### Forged dossier authorship
 
-*Threat:* fabricated git identity or toolchain facts.
+**Threat:** an attacker replaces a dossier and recomputes the integrity seal.
 
-*Mitigation:* provenance probes run locally and their outputs are hashed into
-the dossier; dirty state is recorded honestly. But provenance reflects what
-the local environment *reported* — a compromised environment can lie.
-Cross-verifying provenance requires external attestation infrastructure
-(future work).
+**Mitigation:** finalized dossiers can be signed with detached Ed25519 signatures binding the exact `bundle.json` bytes and run id.
 
-### Secret leakage through environment recording
+**Important trust split:** signature validity answers only "does this signature verify under this supplied public key?" It does not answer "do I trust this key?".
 
-*Threat:* API keys leaking into published dossiers via env dumps.
+`scirust-verify-signature-policy` provides a separate machine-readable local authorization layer over exact SHA-256 public-key fingerprints, with explicit revocation taking precedence over allowlisting.
 
-*Mitigations (implemented):* secret-like variable names are stripped from
-child environments entirely and never recorded; evidence records only an
-explicit allowlist of variables plus explicitly-set non-secret values;
-free-form strings (e.g. RUSTFLAGS) pass redaction screening.
+**Residual:** fingerprint authorization is local policy, not human identity, PKI certification, key provenance, trusted timestamping or remote attestation.
 
-*Residual:* defense in depth only — determined leakage channels (a hostile
-build script printing your secrets into stdout logs) are not detectable.
-Verify untrusted projects only in environments where exposure is contained.
+### Forged provenance or execution-boundary declaration
 
-### Malicious custom commands
+**Threat:** a compromised producer reports false git/toolchain/host/boundary information.
 
-*Threat:* `[[custom_checks]]` is arbitrary code execution by design.
+**Mitigation:** the reported provenance and environment are integrity-bound into the finalized dossier and can be compared or policy-gated.
 
-*Mitigation:* treated exactly like that: structurally recorded (program,
-args, cwd, timeout), executed without a shell, subject to bounds/timeouts.
-Reviewing a manifest before running it is *your* responsibility.
+**Residual:** a compromised producer can lie before sealing. Cross-host trust requires an external attestation mechanism; SciRust-Verify does not currently provide hardware-rooted remote attestation.
 
-## Explicit non-goals for V0.1
+### Remote/CI evidence substitution
 
-* No sandboxing of any kind.
-* No cryptographic signatures on dossiers.
-* No network-isolation guarantees for executed commands.
-* No formal proof artifacts (all current evidence is empirical).
+**Threat:** evidence produced elsewhere is modified, mixed with another run, or injected into the local store.
 
-Each limitation appears in generated reports when relevant so downstream
-consumers are never misled about coverage.
+**Mitigation:** remote import requires a finalized integrity-valid dossier, exact run-id consistency, safe sealed paths, staging, double integrity verification and no overwrite of an existing run. Cross-run aggregation additionally requires compatible source identity and scope information where relevant.
+
+**Residual:** importing valid bytes does not establish that the remote machine was honest. Signer policy and external worker trust remain separate decisions.
+
+### Cross-platform determinism overclaim
+
+**Threat:** a single-host deterministic run is presented as cross-platform determinism.
+
+**Mitigation:** scope-aware aggregation requires multiple finalized integrity-valid runs and records distinct normalized execution platforms. Output parity is a separate comparison operation; platform coverage alone is never treated as output equivalence.
+
+### Secret leakage
+
+**Threat:** credentials leak through inherited environment or recorded evidence.
+
+**Mitigation:** secret-like environment-variable names are removed from child environments and never recorded; evidence records only an allowlist plus explicitly-set non-secret variables.
+
+**Residual:** hostile code can deliberately exfiltrate information it can read through stdout, files or other channels. Use stronger isolation for untrusted code and sensitive hosts.
+
+## Scientific semantics are unchanged by trust features
+
+Containment, integrity seals, signatures, signer policy, boundary policy and remote import do not convert empirical evidence into a formal proof.
+
+The verdict vocabulary remains:
+
+- `VERIFIED`
+- `FAILED`
+- `NOT_VERIFIED`
+- `SKIPPED`
+- `UNSUPPORTED`
+
+A `VERIFIED` result always means the property was established by the recorded evidence **under the recorded scope**. It does not imply universal cross-platform validity, formal correctness or trusted execution unless those are separately evidenced and supported.
+
+## Current explicit non-goals / residual boundaries
+
+- No hardware-rooted remote attestation of workers or hosts.
+- No claim that bubblewrap containment is equivalent to a VM or proves confidentiality from hostile code.
+- No built-in PKI or human/organization identity certification for signing keys.
+- No trusted timestamping or key-history service.
+- No formal-proof claim for empirical verification evidence.
+- No inference that single-host determinism proves cross-platform determinism.
+
+These are trust boundaries, not hidden prerequisites. Downstream policy should fail closed when it requires evidence SciRust-Verify does not record or establish.
