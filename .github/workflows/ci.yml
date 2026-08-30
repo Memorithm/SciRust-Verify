@@ -115,6 +115,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
 
+      - name: Permit user namespaces on disposable runner
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          test "$(cat /proc/sys/user/max_user_namespaces)" -gt 0
+          bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true
+
       - name: Build CLI
         run: cargo build --release --locked -p scirust-verify-cli
 
