@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Parser;
 use scirust_verify_model::Digest;
@@ -82,7 +82,10 @@ fn main() -> std::process::ExitCode {
             } else {
                 println!("run               : {}", outcome.run_id);
                 println!("key id            : {}", outcome.key_id);
-                println!("fingerprint       : {}", outcome.public_key_fingerprint_sha256);
+                println!(
+                    "fingerprint       : {}",
+                    outcome.public_key_fingerprint_sha256
+                );
                 println!("policy status     : {}", outcome.status);
                 for reason in &outcome.reasons {
                     println!("reason            : {reason}");
@@ -113,9 +116,12 @@ fn execute(cli: &Cli) -> Result<TrustOutcome, String> {
     let store = runs
         .open(&cli.run)
         .map_err(|error| format!("run `{}` is not available: {error}", cli.run))?;
-    let bundle_files_verified = store
-        .verify_integrity()
-        .map_err(|error| format!("run `{}` failed dossier integrity verification: {error}", cli.run))?;
+    let bundle_files_verified = store.verify_integrity().map_err(|error| {
+        format!(
+            "run `{}` failed dossier integrity verification: {error}",
+            cli.run
+        )
+    })?;
     let run_doc = store
         .read_run_document()
         .map_err(|error| format!("run `{}` has unusable metadata: {error}", cli.run))?;
@@ -221,8 +227,7 @@ fn validate_policy(policy: &SignatureTrustPolicy) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const FINGERPRINT: &str =
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const FINGERPRINT: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn policy() -> SignatureTrustPolicy {
         SignatureTrustPolicy {
@@ -254,7 +259,9 @@ mod tests {
     #[test]
     fn duplicate_fingerprint_is_rejected() {
         let mut document = policy();
-        document.allowed_fingerprints_sha256.push(FINGERPRINT.into());
+        document
+            .allowed_fingerprints_sha256
+            .push(FINGERPRINT.into());
         assert!(validate_policy(&document).is_err());
     }
 
@@ -269,7 +276,9 @@ mod tests {
     #[test]
     fn revocation_has_explicit_precedence_over_allowlist() {
         let mut document = policy();
-        document.revoked_fingerprints_sha256.push(FINGERPRINT.into());
+        document
+            .revoked_fingerprints_sha256
+            .push(FINGERPRINT.into());
         assert!(validate_policy(&document).is_ok());
         assert!(document
             .revoked_fingerprints_sha256
