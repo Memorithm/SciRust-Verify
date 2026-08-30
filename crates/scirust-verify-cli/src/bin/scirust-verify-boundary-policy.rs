@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use scirust_verify_model::{Digest, EnvironmentSnapshot};
+use scirust_verify_model::{Digest, EnvironmentSnapshot, SCHEMA_VERSION};
 use scirust_verify_store::{RunState, RunsRoot};
 use serde::{Deserialize, Serialize};
 
@@ -111,6 +111,7 @@ fn execute(run_id: &str, policy_path: &Path, project: &Path) -> Result<BoundaryO
     let run_doc = store
         .read_run_document()
         .map_err(|error| format!("run `{run_id}` has unusable metadata: {error}"))?;
+    validate_dossier_schema_version(run_doc.schema_version)?;
     if run_doc.state != RunState::Finalized {
         return Err(format!("run `{run_id}` is not finalized"));
     }
@@ -179,6 +180,15 @@ fn execute(run_id: &str, policy_path: &Path, project: &Path) -> Result<BoundaryO
         reasons,
         trust_boundary: "exact policy matching over an integrity-sealed producer-declared execution boundary; this is not remote attestation or a formal safety proof",
     })
+}
+
+fn validate_dossier_schema_version(schema_version: u64) -> Result<(), String> {
+    if schema_version > SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported dossier schema version {schema_version} (highest supported {SCHEMA_VERSION})"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_policy(policy: &BoundaryPolicy) -> Result<(), String> {
@@ -257,6 +267,18 @@ mod tests {
             assertion_scope: "producer_declared_not_attested".into(),
         };
         assert!(!reasons_for(&policy(), Some(boundary)).is_empty());
+    }
+
+    #[test]
+    fn future_dossier_schema_fails_closed() {
+        let error = validate_dossier_schema_version(SCHEMA_VERSION + 1)
+            .expect_err("future dossier schema must be rejected");
+        assert!(error.contains("unsupported dossier schema version"));
+    }
+
+    #[test]
+    fn current_dossier_schema_is_supported() {
+        assert!(validate_dossier_schema_version(SCHEMA_VERSION).is_ok());
     }
 
     #[test]
