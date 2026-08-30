@@ -16,8 +16,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 
 const HUB_RESULT_SCHEMA_VERSION: u64 = 1;
-const AUTH_TRANSPORT_MEDIA_TYPE: &str =
-    "application/vnd.scirust.verify-authenticated-transport.v1";
+const AUTH_TRANSPORT_MEDIA_TYPE: &str = "application/vnd.scirust.verify-authenticated-transport.v1";
 const RESULT_MEDIA_TYPE: &str =
     "application/vnd.scirust.verify-hub-authenticated-inspection.v1+json";
 
@@ -139,7 +138,9 @@ fn run_authenticated_unpack(
     })?;
     let sibling = current
         .parent()
-        .ok_or_else(|| HubAuthError::Invalid("Hub adapter executable has no parent directory".into()))?
+        .ok_or_else(|| {
+            HubAuthError::Invalid("Hub adapter executable has no parent directory".into())
+        })?
         .join(executable_name("scirust-verify-auth-transport"));
     let output = Command::new(&sibling)
         .arg("--json")
@@ -207,7 +208,10 @@ fn inspection_from_outcome(
     })
 }
 
-fn write_result(path: &Path, result: &HubAuthenticatedInspectionResult) -> Result<(), HubAuthError> {
+fn write_result(
+    path: &Path,
+    result: &HubAuthenticatedInspectionResult,
+) -> Result<(), HubAuthError> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
