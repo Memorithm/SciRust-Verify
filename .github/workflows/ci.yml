@@ -206,13 +206,10 @@ jobs:
           }
           with open('/tmp/signature-trust-allow.json', 'w') as f:
               json.dump(policy, f, sort_keys=True)
-          with open('/tmp/signature-path', 'w') as f:
-              f.write(
-                  'fixtures/passing-project/.scirust-verify/signatures/'
-                  + '${RUN_ID}' + '/' + public['key_id'] + '.json'
-              )
           PY
-          signature=$(cat /tmp/signature-path)
+          key_id=$(python3 -c 'import json; print(json.load(open("/tmp/scirust-verify-public.json"))["key_id"])')
+          signature="fixtures/passing-project/.scirust-verify/signatures/$RUN_ID/$key_id.json"
+          test -f "$signature"
           ./target/release/scirust-verify-signature-policy "$RUN_ID" \
             --signature "$signature" \
             --public-key /tmp/scirust-verify-public.json \
