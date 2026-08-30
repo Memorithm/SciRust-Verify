@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "id": "2b0d1119-b405-4c70-9c5a-dd8535800a3d",
+  "name": "SciRust-Verify Authenticated Inspector",
+  "version": "0.1.0",
+  "kind": "tool",
+  "capabilities": [
+    {
+      "name": "verify.dossier_authenticity",
+      "contract_version": "1.0.0",
+      "inputs": [
+        {
+          "name": "dossier",
+          "description": "application/vnd.scirust.verify-authenticated-transport.v1"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "result",
+          "description": "application/vnd.scirust.verify-hub-authenticated-inspection.v1+json"
+        }
+      ],
+      "properties": {
+        "claim_semantics": "transport_integrity_and_signature_validity_only",
+        "input_media_type": "application/vnd.scirust.verify-authenticated-transport.v1",
+        "result_media_type": "application/vnd.scirust.verify-hub-authenticated-inspection.v1+json",
+        "signer_authorization": "not_established",
+        "sandbox": "none"
+      }
+    }
+  ],
+  "execution": {
+    "type": "process",
+    "program": "/opt/scirust-verify/bin/scirust-verify-hub-auth",
+    "args": [
+      "--dossier",
+      "{input:dossier}",
+      "--result",
+      "{output:result}"
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "path": "outputs/scirust-verify-authenticated-inspection.json",
+        "media_type": "application/vnd.scirust.verify-hub-authenticated-inspection.v1+json",
+        "required": true
+      }
+    ]
+  },
+  "metadata": {
+    "contract": "scirust-verify-hub-authenticated-v1",
+    "dossier_transport": "svat-v1",
+    "trust_boundary": "signature_validity_under_transported_key_only",
+    "signer_authorization": "external_policy_required"
+  }
+}
