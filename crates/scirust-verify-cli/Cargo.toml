@@ -12,6 +12,10 @@ authors.workspace = true
 name = "scirust-verify"
 path = "src/main.rs"
 
+[[bin]]
+name = "scirust-verify-contain"
+path = "src/bin/scirust-verify-contain.rs"
+
 [dependencies]
 scirust-verify-model = { workspace = true }
 scirust-verify-parity = { workspace = true }
