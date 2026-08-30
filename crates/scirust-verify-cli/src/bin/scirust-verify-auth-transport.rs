@@ -124,6 +124,46 @@ struct Envelope {
     public_key: Vec<u8>,
 }
 
+struct SignatureSnapshot {
+    signature: Vec<u8>,
+    public_key: Vec<u8>,
+    signature_path: PathBuf,
+    public_key_path: PathBuf,
+}
+
+impl SignatureSnapshot {
+    fn capture(
+        signature_input: &Path,
+        public_key_input: &Path,
+        anchor: &Path,
+    ) -> Result<Self, AuthTransportError> {
+        let signature = read_bounded(signature_input, MAX_SIGNATURE_BYTES)?;
+        let public_key = read_bounded(public_key_input, MAX_PUBLIC_KEY_BYTES)?;
+        let signature_path = temporary_sibling(anchor, ".signature.snapshot");
+        let public_key_path = temporary_sibling(anchor, ".public-key.snapshot");
+
+        write_new(&signature_path, &signature)?;
+        if let Err(error) = write_new(&public_key_path, &public_key) {
+            let _ = fs::remove_file(&signature_path);
+            return Err(error);
+        }
+
+        Ok(Self {
+            signature,
+            public_key,
+            signature_path,
+            public_key_path,
+        })
+    }
+}
+
+impl Drop for SignatureSnapshot {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.signature_path);
+        let _ = fs::remove_file(&self.public_key_path);
+    }
+}
+
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -187,13 +227,14 @@ fn pack(
         ))
     })?;
 
-    let public = read_public_key(public_key_path)
+    let snapshot = SignatureSnapshot::capture(signature_path_input, public_key_path, output)?;
+    let public = read_public_key(&snapshot.public_key_path)
         .map_err(|error| signature_error(format!("public key is invalid: {error}")))?;
     let verification = verify_bundle_signature(
         run_id,
         &store.path().join("bundle.json"),
-        signature_path_input,
-        public_key_path,
+        &snapshot.signature_path,
+        &snapshot.public_key_path,
     )
     .map_err(|error| signature_error(format!("signature verification failed: {error}")))?;
     if verification.key_id != public.key_id {
@@ -202,8 +243,6 @@ fn pack(
         ));
     }
 
-    let signature = read_bounded(signature_path_input, MAX_SIGNATURE_BYTES)?;
-    let public_key = read_bounded(public_key_path, MAX_PUBLIC_KEY_BYTES)?;
     let inner_path = temporary_sibling(output, ".inner.svtr");
     let transport_result = (|| {
         run_transport(&[
@@ -222,8 +261,8 @@ fn pack(
 
     let envelope = encode_envelope(&Envelope {
         transport: transport.clone(),
-        signature,
-        public_key,
+        signature: snapshot.signature.clone(),
+        public_key: snapshot.public_key.clone(),
     })?;
     publish_new_file(output, &envelope)?;
 
@@ -237,7 +276,7 @@ fn pack(
         public_key_fingerprint_sha256: public.fingerprint_sha256,
         path: output.display().to_string(),
         imported_public_key_trusted: false,
-        trust_boundary: "the enclosed dossier was integrity-valid and its detached Ed25519 signature verified under the enclosed public key; key identity trust, revocation policy, remote-host trust and scientific claims remain external decisions",
+        trust_boundary: "the enclosed dossier was integrity-valid and its detached Ed25519 signature verified under the exact snapshotted public-key/signature bytes carried by this envelope; key identity trust, revocation policy, remote-host trust and scientific claims remain external decisions",
     })
 }
 
@@ -524,15 +563,26 @@ fn publish_new_file(path: &Path, bytes: &[u8]) -> Result<(), AuthTransportError>
     {
         fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
     }
-    File::options()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .and_then(|mut file| {
-            file.write_all(bytes)?;
-            file.sync_all()
-        })
-        .map_err(|source| {
+    if path.exists() {
+        return Err(invalid(format!(
+            "destination `{}` already exists; authenticated transport never overwrites",
+            path.display()
+        )));
+    }
+
+    let staging = temporary_sibling(path, ".publish");
+    let result = (|| {
+        let mut file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&staging)
+            .map_err(|source| io_error(&staging, source))?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|source| io_error(&staging, source))?;
+        drop(file);
+
+        fs::hard_link(&staging, path).map_err(|source| {
             if path.exists() {
                 invalid(format!(
                     "destination `{}` already exists; authenticated transport never overwrites",
@@ -541,7 +591,11 @@ fn publish_new_file(path: &Path, bytes: &[u8]) -> Result<(), AuthTransportError>
             } else {
                 io_error(path, source)
             }
-        })
+        })?;
+        Ok(())
+    })();
+    let _ = fs::remove_file(&staging);
+    result
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), AuthTransportError> {
@@ -624,6 +678,12 @@ mod tests {
         }
     }
 
+    fn temp_test_dir(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(unique_name(label));
+        fs::create_dir_all(&path).expect("create test directory");
+        path
+    }
+
     #[test]
     fn framing_round_trips_exact_bytes() {
         let encoded = encode_envelope(&sample()).expect("encode");
@@ -671,5 +731,54 @@ mod tests {
             trust_boundary: "test",
         };
         assert!(!outcome.imported_public_key_trusted);
+    }
+
+    #[test]
+    fn signature_snapshot_keeps_exact_captured_bytes() {
+        let dir = temp_test_dir("auth-snapshot");
+        let signature = dir.join("signature.json");
+        let public_key = dir.join("public-key.json");
+        let anchor = dir.join("envelope.svat");
+        fs::write(&signature, b"signed-bytes-v1").expect("signature input");
+        fs::write(&public_key, b"key-bytes-v1").expect("key input");
+
+        let snapshot = SignatureSnapshot::capture(&signature, &public_key, &anchor)
+            .expect("capture stable inputs");
+        fs::write(&signature, b"attacker-signature").expect("replace signature input");
+        fs::write(&public_key, b"attacker-key").expect("replace key input");
+
+        assert_eq!(snapshot.signature, b"signed-bytes-v1");
+        assert_eq!(snapshot.public_key, b"key-bytes-v1");
+        assert_eq!(
+            fs::read(&snapshot.signature_path).expect("snapshot signature"),
+            b"signed-bytes-v1"
+        );
+        assert_eq!(
+            fs::read(&snapshot.public_key_path).expect("snapshot public key"),
+            b"key-bytes-v1"
+        );
+        let signature_snapshot = snapshot.signature_path.clone();
+        let public_key_snapshot = snapshot.public_key_path.clone();
+        drop(snapshot);
+        assert!(!signature_snapshot.exists());
+        assert!(!public_key_snapshot.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn atomic_publish_never_overwrites_existing_destination() {
+        let dir = temp_test_dir("auth-atomic-publish");
+        let destination = dir.join("evidence.svat");
+        publish_new_file(&destination, b"first complete payload").expect("initial publish");
+        let error = publish_new_file(&destination, b"replacement")
+            .expect_err("second publish must fail closed");
+        assert!(error.to_string().contains("never overwrites"));
+        assert_eq!(
+            fs::read(&destination).expect("published bytes"),
+            b"first complete payload"
+        );
+        let entries = fs::read_dir(&dir).expect("list test directory").count();
+        assert_eq!(entries, 1, "temporary publish files must be cleaned up");
+        let _ = fs::remove_dir_all(dir);
     }
 }
