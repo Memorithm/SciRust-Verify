@@ -83,13 +83,32 @@ It invokes:
   --result {output:result}
 ```
 
-`scirust-verify-hub-auth` locates the sibling `scirust-verify-auth-transport` binary and unpacks the artifact in an owner-only temporary project directory on Unix. The authenticated transport path verifies dossier integrity and the detached Ed25519 signature under the exact transported public key before the Hub adapter emits its result.
+`scirust-verify-hub-auth` locates the sibling `scirust-verify-auth-transport` binary and unpacks the artifact in an owner-only temporary project directory on Unix. `scirust-verify-auth-transport` in turn invokes the sibling `scirust-verify-transport` binary for the inner `.svtr` reconstruction. The authenticated transport path verifies dossier integrity and the detached Ed25519 signature under the exact transported public key before the Hub adapter emits its result.
 
 A successful authenticated inspection reports `status = "signature_valid_under_transported_key"` and always reports `signer_authorized = false`. Transported key material is evidence used for signature verification, not a trust root. Signer authorization remains an independent local-policy decision.
 
 ## Deployment layout
 
-The checked-in Hub component manifests use sibling executable discovery. A deployment that enables **both** integrity and authenticated inspection must therefore install all four binaries in the same directory:
+The checked-in Hub component manifests use sibling executable discovery.
+
+An **integrity-only** deployment requires these two binaries in the same directory:
+
+```text
+/opt/scirust-verify/bin/scirust-verify-hub
+/opt/scirust-verify/bin/scirust-verify-transport
+```
+
+An **authenticated-only** deployment requires these three binaries in the same directory:
+
+```text
+/opt/scirust-verify/bin/scirust-verify-hub-auth
+/opt/scirust-verify/bin/scirust-verify-auth-transport
+/opt/scirust-verify/bin/scirust-verify-transport
+```
+
+The ordinary `scirust-verify-hub` binary is not required for authenticated-only inspection. Conversely, `scirust-verify-transport` is a transitive runtime requirement of the authenticated path because the authenticated wrapper delegates reconstruction of its inner `.svtr` payload to that binary.
+
+A deployment that enables **both** integrity and authenticated inspection therefore installs all four binaries:
 
 ```text
 /opt/scirust-verify/bin/scirust-verify-hub
@@ -98,7 +117,7 @@ The checked-in Hub component manifests use sibling executable discovery. A deplo
 /opt/scirust-verify/bin/scirust-verify-auth-transport
 ```
 
-If only `verify.dossier_integrity` is deployed, the first two binaries are sufficient. The authenticated capability requires the latter two as well; omitting either causes the authenticated adapter to fail rather than silently fall back to integrity-only inspection.
+Omitting a required sibling executable causes the relevant adapter to fail rather than silently fall back to a weaker inspection mode.
 
 Sibling lookup avoids dependence on inherited `PATH`, which is important because Hub constructs an explicit child environment rather than inheriting arbitrary host variables.
 
