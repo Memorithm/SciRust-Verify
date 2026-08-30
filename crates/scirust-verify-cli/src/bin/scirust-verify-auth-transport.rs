@@ -256,16 +256,17 @@ fn unpack(input: &Path, project: &Path) -> Result<Outcome, AuthTransportError> {
     write_new(&stage_signature, &envelope.signature)?;
     write_new(&stage_key, &envelope.public_key)?;
 
-    let result = unpack_staged(
-        &stage_project,
-        &stage_transport,
-        &stage_signature,
-        &stage_key,
+    let context = StagedImport {
+        stage_project: &stage_project,
+        stage_transport: &stage_transport,
+        stage_signature: &stage_signature,
+        stage_key: &stage_key,
         project,
-        &envelope_bytes,
-        &envelope.transport,
+        envelope_bytes: &envelope_bytes,
+        transport_bytes: &envelope.transport,
         input,
-    );
+    };
+    let result = unpack_staged(&context);
     let _ = fs::remove_dir_all(&stage_root);
     result
 }
@@ -351,8 +352,8 @@ fn unpack_staged(context: &StagedImport<'_>) -> Result<Outcome, AuthTransportErr
     let key_dir = verify_root.join("imported-public-keys");
     let final_key = key_dir.join(format!("{}.json", public.fingerprint_sha256));
 
-    let key_bytes = fs::read(context.stage_key)
-        .map_err(|source| io_error(context.stage_key, source))?;
+    let key_bytes =
+        fs::read(context.stage_key).map_err(|source| io_error(context.stage_key, source))?;
     let key_created = publish_key_material(&final_key, &key_bytes)?;
     let signature_bytes = fs::read(context.stage_signature)
         .map_err(|source| io_error(context.stage_signature, source))?;
@@ -423,11 +424,7 @@ fn parse_envelope(bytes: &[u8]) -> Result<Envelope, AuthTransportError> {
             "unsupported or malformed authenticated transport magic/version",
         ));
     }
-    let transport = read_section(
-        &mut cursor,
-        MAX_INNER_TRANSPORT_BYTES,
-        "dossier transport",
-    )?;
+    let transport = read_section(&mut cursor, MAX_INNER_TRANSPORT_BYTES, "dossier transport")?;
     let signature = read_section(&mut cursor, MAX_SIGNATURE_BYTES, "signature")?;
     let public_key = read_section(&mut cursor, MAX_PUBLIC_KEY_BYTES, "public key")?;
     if cursor.position() != bytes.len() as u64 {
