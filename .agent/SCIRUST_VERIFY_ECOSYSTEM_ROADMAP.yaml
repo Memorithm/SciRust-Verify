@@ -1,0 +1,214 @@
+schema_version: 1
+kind: scirust_verify_ecosystem_agent_roadmap
+status: active
+last_updated: "2026-08-31"
+repository: Memorithm/SciRust-Verify
+intended_consumer: autonomous_coding_agent
+merge_policy: never_merge_this_file_to_default_branch_unless_user_explicitly_requests
+
+mission:
+  primary: >-
+    Evolve SciRust-Verify as the verification, evidence, provenance, integrity,
+    scoped-claim, and verdict layer of the Memorithm ecosystem. Convert executed
+    observations into trustworthy Evidence Dossiers without overstating what the
+    evidence establishes.
+  ecosystem_goal: >-
+    Provide a versioned evidence substrate that SciRust, Hub, SciCapsule,
+    ElasticXxx, Forge, FLAT-ATTENTION, NNIS, SLHAv2, and scientific research
+    projects can use while preserving each producer's domain semantics and the
+    distinction between empirical verification, numerical validation, benchmark
+    evidence, and scientific interpretation.
+
+verified_current_facts:
+  - Evidence_Dossiers_record_artifact_environment_provenance_plan_claims_executions_evaluations_reports_and_integrity_manifest
+  - finalized_bundles_are_integrity_sealed_with_SHA_256_file_identity
+  - verdicts_include_VERIFIED_FAILED_NOT_VERIFIED_SKIPPED_and_UNSUPPORTED
+  - required_optional_and_informational_requirement_levels_exist
+  - cross_process_determinism_checks_and_numeric_observation_protocol_support_exist
+  - Cargo_and_SciRust_adapters_exist
+  - replay_and_diff_surfaces_exist
+  - current_documentation_explicitly_states_that_execution_is_not_formal_proof_regulatory_certification_or_a_sandbox
+  - SciRust_adapter_preserves_PASS_PASS_WITH_GAPS_and_FAIL_semantics_instead_of_flattening_them
+
+invariants:
+  - evidence_integrity_does_not_increase_the_scope_of_a_claim
+  - empirical_verification_is_never_described_as_formal_proof
+  - single_host_determinism_evidence_is_not_cross_platform_determinism
+  - producer_reported_verdicts_are_not_trusted_when_Verify_can_independently_evaluate_raw_observations
+  - missing_unparseable_timeout_or_incompatible_evidence_fails_to_NOT_VERIFIED_or_the_declared_gap_state_not_VERIFIED
+  - replay_creates_a_new_linked_run_and_never_rewrites_original_provenance
+  - evidence_ingestion_preserves_source_semantics_and_limitations
+  - hostile_project_execution_is_not_called_sandboxed_without_a_real_isolation_boundary
+  - required_CI_must_be_green_on_exact_PR_head_before_merge
+
+ownership:
+  role: ecosystem_evidence_integrity_scope_claim_evaluation_and_verdict_layer
+  owns:
+    - Evidence_Dossier_formats_and_integrity_sealing
+    - verification_plan_execution_and_raw_evidence_normalization
+    - scoped_claim_registration_and_requirement_levels
+    - independent_numeric_observation_evaluation
+    - verdict_and_limitation_derivation
+    - replay_diff_and_report_surfaces
+    - adapters_that_ingest_external_evidence_without_reimplementing_source_domain_semantics
+  does_not_own:
+    - SciRust_internal_scientific_or_functional_acceptance_semantics
+    - Hub_global_orchestration_or_artifact_control_plane
+    - SciCapsule_capsule_trust_or_execution_semantics
+    - ElasticXxx_runtime_commit_or_rollback_policy
+    - Forge_candidate_search_or_selection_strategy
+    - FLAT_ATTENTION_attention_correctness_definition
+    - NNIS_model_runtime_or_performance_promotion_policy
+    - SLHAv2_KV_quality_semantics
+    - nonlocal_relativity_physical_or_scientific_interpretation
+
+evidence_classes:
+  functional_correctness:
+    rule: must_name_oracle_scope_and_executed_path
+  numerical_validation:
+    rule: must_record_tolerance_reference_and_sampling_scope
+  determinism:
+    rule: must_record_process_thread_platform_toolchain_and_environment_scope
+  performance:
+    rule: benchmark_evidence_must_record_workload_environment_warmup_iterations_and_comparison_identity
+  scientific_experiment:
+    rule: preserve_the_source_project_classification_between_established_implementation_validation_and_experimental_model_results
+  security_or_trust:
+    rule: never_infer_sandbox_authorization_or_authenticity_from_unrelated_integrity_evidence
+
+ecosystem_interfaces:
+  Memorithm/scirust:
+    relationship: active_adapter_and_internal_evidence_producer
+    status: active
+    rule: preserve_SciRust_acceptance_semantics_and_ingest_completed_evidence_without_reimplementing_the_scientific_stack
+  Memorithm/scirust-hub:
+    relationship: orchestration_and_immutable_artifact_partner
+    status: planned_versioned_contract
+    desired:
+      - Hub_invokes_or_ingests_Verify_as_a_component
+      - Evidence_Dossier_is_retained_as_immutable_Hub_artifact
+      - Hub_does_not_recompute_Verify_verdict_semantics
+  Memorithm/SciCapsule:
+    relationship: portable_artifact_identity_trust_and_execution_evidence_source
+    status: planned
+    desired:
+      - record_capsule_digest_signature_policy_and_execution_result_as_evidence
+      - keep_SciCapsule_local_trust_decision_distinct_from_Verify_claim_verdict
+  Memorithm/ElasticXxx:
+    relationship: adaptive_runtime_evidence_source
+    status: planned
+    desired:
+      - ingest_observation_plan_actuation_verification_and_commit_or_rollback_records
+      - preserve_Elastic_runtime_decision_as_source_fact_not_generic_Verify_verdict
+  Memorithm/forge:
+    relationship: candidate_search_evidence_source
+    status: planned
+    desired:
+      - ingest_candidate_identity_verify_measure_and_selection_provenance
+      - distinguish_candidate_score_from_verified_claim
+  Memorithm/FLAT-ATTENTION:
+    relationship: attention_correctness_and_benchmark_evidence_source
+    status: planned
+    desired:
+      - prevent_microbenchmark_results_from_becoming_end_to_end_runtime_claims
+  Memorithm/NVIDIA-Native-Inference-Stack:
+    relationship: model_runtime_correctness_performance_and_representation_evidence_source
+    status: planned
+    desired:
+      - preserve_environment_fingerprint_model_workload_precision_and_exact_head_identity
+  Memorithm/SLHAv2:
+    relationship: real_model_quality_memory_and_throughput_evidence_source
+    status: planned
+    desired:
+      - distinguish_proxy_kernel_evidence_from_real_model_baseline_vs_SLHA_evidence
+  Memorithm/nonlocal-relativity-v2:
+    relationship: deterministic_scientific_experiment_evidence_source
+    status: planned
+    desired:
+      - preserve_scientific_category_oracle_and_limitation_metadata
+      - never_upgrade_numerical_self_consistency_to_physical_validation
+
+roadmap:
+  - id: VER0
+    name: Current implementation and threat-model audit
+    status: active
+    goals:
+      - audit_CLI_dossier_integrity_provenance_replay_diff_SVOP_adapters_determinism_and_custom_command_execution
+      - identify_the_highest_value_gap_from_actual_code_not_assumptions
+      - keep_current_verdict_semantics_stable_while_extending_evidence_sources
+  - id: VER1
+    name: Hostile project execution boundary
+    status: active_priority
+    goals:
+      - define_a_sandbox_or_external_isolation_runner_contract
+      - keep_existing_direct_host_execution_honestly_labeled
+      - fail_closed_when_a_manifest_requires_isolation_that_is_unavailable
+      - preserve_command_provenance_across_isolated_execution
+  - id: VER2
+    name: Remote and CI evidence ingestion
+    status: planned
+    goals:
+      - ingest_evidence_from_remote_or_CI_workers_with_explicit_source_identity
+      - verify_integrity_and_schema_before_aggregation
+      - distinguish_locally_executed_checks_from_imported_evidence
+      - prevent_duplicate_or_replayed_evidence_from_inflating_requirement_satisfaction
+  - id: VER3
+    name: Signed evidence and artifact attestation
+    status: planned
+    goals:
+      - add_detached_signature_or_attestation_envelope_without_mutating_core_evidence_objects
+      - bind_signatures_to_exact_bundle_identity
+      - separate_integrity_authenticity_and_trust_policy
+      - evaluate_SciCapsule_primitives_or_shared_SciRust_crypto_primitives_before_duplication
+  - id: VER4
+    name: Multi-host and cross-platform determinism aggregation
+    status: planned_after_VER2
+    goals:
+      - aggregate_same_plan_runs_across_host_platform_and_toolchain_fingerprints
+      - define_exact_comparability_rules
+      - report_platform_matrix_and_failures_without_erasing_local_scope
+      - never_claim_universal_determinism_from_finite_host_samples
+  - id: VER5
+    name: Machine-readable policy evaluation
+    status: planned
+    goals:
+      - define_versioned_policies_over_claims_requirements_limitations_and_trust_inputs
+      - keep_policy_result_separate_from_raw_evidence_and_base_verdicts
+      - provide_fail_closed_unknown_policy_version_behavior
+  - id: VER6
+    name: Ecosystem evidence adapters
+    status: active_longitudinal
+    sequence:
+      - maintain_SciRust_adapter
+      - add_Hub_component_and_artifact_contract
+      - add_SciCapsule_identity_trust_execution_adapter
+      - add_ElasticXxx_cycle_adapter
+      - add_Forge_campaign_adapter
+      - add_FLAT_NNIS_and_SLHAv2_benchmark_runtime_adapters
+      - add_nonlocal_relativity_experiment_adapter
+    rule: one_adapter_must_preserve_source_semantics_instead_of_flattening_all_inputs_to_pass_fail
+  - id: VER7
+    name: Stable trust productization
+    status: long_term
+    goals:
+      - semver_MSRV_and_evidence_schema_policy
+      - migration_and_backward_read_compatibility
+      - reproducible_self_verification
+      - documented_threat_model_and_trust_boundaries
+      - ecosystem_compatibility_matrix
+
+agent_operating_protocol:
+  must_read_this_file:
+    - at_start_of_every_agent_session
+    - before_evidence_schema_verdict_trust_or_execution_boundary_changes
+    - before_cross_repository_adapter_work
+    - before_merge_decisions
+  must_update_this_file:
+    - evidence_or_policy_schema_change
+    - trust_or_execution_boundary_change
+    - ecosystem_adapter_contract_change
+    - roadmap_phase_change
+  fail_closed: >-
+    If this roadmap cannot be read, do not make major evidence-schema, verdict,
+    trust, execution-boundary, cross-repository, or merge decisions. Read-only
+    diagnosis is allowed.
