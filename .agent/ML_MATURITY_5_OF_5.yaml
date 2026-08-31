@@ -1,0 +1,64 @@
+schema_version: 1
+kind: memorithm_ml_maturity_program
+status: active
+last_updated: "2026-08-31"
+repository: Memorithm/SciRust-Verify
+objective: >-
+  Raise ML evidence and verification maturity to 5/5 by making model quality,
+  numerical parity, determinism, performance, memory, hardware scope and
+  cross-host reproducibility first-class evidence without confusing empirical
+  verification with formal proof.
+score_policy:
+  five_of_five_requires:
+    - versioned_ML_evidence_schemas
+    - producer_semantics_preserved_not_flattened
+    - raw_measurements_and_environment_identity_retained
+    - independent_reapplication_of_thresholds_where_possible
+    - explicit_scope_and_limitations_in_every_verdict
+    - exact_head_required_CI_green
+  forbidden:
+    - universalizing_single_host_or_single_GPU_evidence
+    - accepting_self_reported_PASS_without_raw_evidence
+    - combining_quality_latency_and_memory_into_an_opaque_score_without_declared_policy
+priority_program:
+  - id: VML0
+    name: ML evidence envelope
+    priority: P0
+    goals:
+      - define_versioned_model_identity_config_tokenizer_weights_dataset_and_checkpoint_refs
+      - distinguish_numerical_quality_performance_memory_energy_determinism_and_correctness_claims
+      - bind_exact_source_commit_binary_toolchain_driver_device_and_runtime_versions
+  - id: VML1
+    name: Benchmark verification
+    priority: P0
+    goals:
+      - ingest_latency_distributions_throughput_memory_and_compile_or_load_time_samples
+      - verify_sample_counts_warmups_dimensions_and_timing_method_metadata
+      - reject_non_finite_or_structurally_incomplete_measurements
+      - preserve_microbenchmark_vs_end_to_end_scope
+  - id: VML2
+    name: Model quality verification
+    priority: P0
+    goals:
+      - ingest_logits_perplexity_accuracy_task_metrics_or_other_declared_quality_observations
+      - independently_reapply_tolerances_or_metric_reductions_when_raw_data_is_available
+      - bind_baseline_and_candidate_to_same_model_dataset_prompt_and_decode_policy
+  - id: VML3
+    name: Cross host and distributed evidence
+    priority: P0
+    goals:
+      - aggregate_multiple_host_GPU_architecture_and_thread_count_runs_without_claim_inflation
+      - distinguish_bit_exact_tolerance_equivalent_statistically_equivalent_and_not_comparable
+      - preserve_rank_worker_and_collective_failure_evidence_for_distributed_training
+  - id: VML4
+    name: Signed and portable evidence
+    priority: P1
+    goals:
+      - integrate_detached_signatures_or_attestations_without_making_signature_equal_truth
+      - interoperate_with_SciCapsule_and_Hub_artifact_identity
+      - support_remote_CI_evidence_ingestion_with_explicit_trust_policy
+completion_definition: >-
+  SciRust-Verify is 5/5 for ML when every claimed maturity gain can be traced to
+  exact model/workload/hardware evidence, thresholds are independently evaluated
+  where possible, multi-host scope is represented honestly, and reports make
+  unsupported generalization impossible by construction.
