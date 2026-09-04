@@ -12,6 +12,10 @@ authors.workspace = true
 name = "scirust-verify"
 path = "src/main.rs"
 
+[[bin]]
+name = "scirust-verify-forge-soup"
+path = "src/forge_soup_main.rs"
+
 [dependencies]
 scirust-verify-model = { workspace = true }
 scirust-verify-runner = { workspace = true }
