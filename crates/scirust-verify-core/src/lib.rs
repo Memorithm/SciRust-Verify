@@ -3,6 +3,7 @@
 
 #![deny(missing_docs)]
 
+pub mod adapters;
 pub mod discovery;
 pub mod manifest;
 pub mod pipeline;
