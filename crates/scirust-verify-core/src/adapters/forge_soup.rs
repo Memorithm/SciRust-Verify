@@ -11,9 +11,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use scirust_verify_model::{
-    Digest as ModelDigest, DigestAlgorithm, Observation, ObservedValue,
-};
+use scirust_verify_model::{Digest as ModelDigest, DigestAlgorithm, Observation, ObservedValue};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
@@ -27,8 +25,7 @@ pub const FORGE_SOUP_RUNNER_MERGE: &str = "9e1f3fc568c176f401735c121780d9fbe6834
 /// Qualified SciRust Hub merge publishing `llm.optimize.forge_soup@1.0.0`.
 pub const FORGE_SOUP_HUB_MERGE: &str = "074cf2c6e00a0b142fe46d1558c8b32df9228859";
 /// SOUP source commit qualified by the published edge.
-pub const FORGE_SOUP_QUALIFIED_SOUP_COMMIT: &str =
-    "05b646523727925990530667e7012ede50bd30b2";
+pub const FORGE_SOUP_QUALIFIED_SOUP_COMMIT: &str = "05b646523727925990530667e7012ede50bd30b2";
 /// SOUP repository identity qualified by the published edge.
 pub const FORGE_SOUP_REPOSITORY: &str = "MakazhanAlpamys/Soup";
 
@@ -67,6 +64,12 @@ pub enum ForgeSoupRecordSummary {
         trial_seed: u64,
         /// Forge generation.
         generation: u64,
+        /// Exact candidate recipe values sent to the Hub evaluator.
+        candidate_values: BTreeMap<String, String>,
+        /// SHA-256 of the materialized SOUP config used by this execution.
+        config_sha256: String,
+        /// Size of the immutable dataset consumed by the evaluator.
+        dataset_bytes: u64,
         /// Source dry-run result. This is not a SciRust-Verify verdict.
         passed: bool,
         /// SOUP subprocess return code.
@@ -92,6 +95,12 @@ pub enum ForgeSoupRecordSummary {
         trial_seed: u64,
         /// Forge generation.
         generation: u64,
+        /// Exact candidate recipe values sent to the Hub evaluator.
+        candidate_values: BTreeMap<String, String>,
+        /// SHA-256 of the materialized SOUP config used by this execution.
+        config_sha256: String,
+        /// Size of the immutable dataset consumed by the evaluator.
+        dataset_bytes: u64,
         /// Exact metric map emitted by the Hub evaluator.
         metrics: BTreeMap<String, f64>,
         /// Source environment fingerprint.
@@ -124,6 +133,39 @@ impl ForgeSoupRecordSummary {
         }
     }
 
+    /// Generation bound to this source record.
+    pub fn generation(&self) -> u64 {
+        match self {
+            Self::Verify { generation, .. } | Self::Measure { generation, .. } => *generation,
+        }
+    }
+
+    /// Exact candidate recipe values bound to this source record.
+    pub fn candidate_values(&self) -> &BTreeMap<String, String> {
+        match self {
+            Self::Verify {
+                candidate_values, ..
+            }
+            | Self::Measure {
+                candidate_values, ..
+            } => candidate_values,
+        }
+    }
+
+    /// Materialized SOUP config SHA-256 bound to this execution.
+    pub fn config_sha256(&self) -> &str {
+        match self {
+            Self::Verify { config_sha256, .. } | Self::Measure { config_sha256, .. } => config_sha256,
+        }
+    }
+
+    /// Dataset size bound to this execution.
+    pub fn dataset_bytes(&self) -> u64 {
+        match self {
+            Self::Verify { dataset_bytes, .. } | Self::Measure { dataset_bytes, .. } => *dataset_bytes,
+        }
+    }
+
     /// Environment fingerprint reported by the Hub evaluator.
     pub fn environment_fingerprint(&self) -> &str {
         match self {
@@ -152,6 +194,28 @@ impl ForgeSoupRecordSummary {
                 ObservedValue::UInt(self.trial_seed()),
             ),
             Observation::new(
+                "forge_soup_identity",
+                "generation",
+                ObservedValue::UInt(self.generation()),
+            ),
+            Observation::new(
+                "forge_soup_identity",
+                "candidate_values",
+                ObservedValue::Json(
+                    serde_json::to_value(self.candidate_values()).unwrap_or(serde_json::Value::Null),
+                ),
+            ),
+            Observation::new(
+                "forge_soup_provenance",
+                "config_sha256",
+                ObservedValue::Text(self.config_sha256().to_owned()),
+            ),
+            Observation::new(
+                "forge_soup_provenance",
+                "dataset_bytes",
+                ObservedValue::Bytes(self.dataset_bytes()),
+            ),
+            Observation::new(
                 "forge_soup_environment",
                 "fingerprint",
                 ObservedValue::Text(self.environment_fingerprint().to_owned()),
@@ -159,7 +223,6 @@ impl ForgeSoupRecordSummary {
         ];
         match self {
             Self::Verify {
-                generation,
                 passed,
                 returncode,
                 elapsed_ns,
@@ -168,11 +231,6 @@ impl ForgeSoupRecordSummary {
                 ..
             } => {
                 out.extend([
-                    Observation::new(
-                        "forge_soup_identity",
-                        "generation",
-                        ObservedValue::UInt(*generation),
-                    ),
                     Observation::new(
                         "forge_soup_verify",
                         "dry_run_passed",
@@ -201,17 +259,11 @@ impl ForgeSoupRecordSummary {
                 ]);
             }
             Self::Measure {
-                generation,
                 metrics,
                 source_evidence_id,
                 raw_record_digest,
                 ..
             } => {
-                out.push(Observation::new(
-                    "forge_soup_identity",
-                    "generation",
-                    ObservedValue::UInt(*generation),
-                ));
                 for (name, value) in metrics {
                     let observation = Observation::new(
                         "forge_soup_metric",
@@ -239,6 +291,25 @@ impl ForgeSoupRecordSummary {
             }
         }
         out
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateExecutionBinding {
+    generation: u64,
+    candidate_values: BTreeMap<String, String>,
+    config_sha256: String,
+    dataset_bytes: u64,
+}
+
+impl CandidateExecutionBinding {
+    fn from_record(record: &ForgeSoupRecordSummary) -> Self {
+        Self {
+            generation: record.generation(),
+            candidate_values: record.candidate_values().clone(),
+            config_sha256: record.config_sha256().to_owned(),
+            dataset_bytes: record.dataset_bytes(),
+        }
     }
 }
 
@@ -322,9 +393,9 @@ impl ForgeSoupIngest {
 /// Loads and validates the Forge campaign report plus Hub evidence tar.
 ///
 /// The adapter verifies source commit identities, report score consistency,
-/// tar regular-file constraints, source evidence shapes, and final-front
-/// coverage by executed measurement evidence. It never evaluates a model-quality
-/// or performance claim by itself.
+/// tar regular-file constraints, source evidence shapes, cross-record candidate
+/// execution identity, and final-front coverage by executed measurement evidence.
+/// It never evaluates a model-quality or performance claim by itself.
 pub fn ingest_forge_soup(
     report_path: &Path,
     evidence_bundle_path: &Path,
@@ -345,8 +416,8 @@ pub fn ingest_forge_soup(
         )));
     }
 
-    let report_bytes = std::fs::read(report_path)
-        .map_err(|error| ForgeSoupAdapterError::Io(error.to_string()))?;
+    let report_bytes =
+        std::fs::read(report_path).map_err(|error| ForgeSoupAdapterError::Io(error.to_string()))?;
     let report: CampaignReport = serde_json::from_slice(&report_bytes)
         .map_err(|error| ForgeSoupAdapterError::Json(error.to_string()))?;
     let report_facts = validate_report(&report)?;
@@ -361,6 +432,7 @@ pub fn ingest_forge_soup(
     let mut source_ids = BTreeSet::new();
     let mut measured_candidates = BTreeSet::new();
     let mut fingerprints = BTreeSet::new();
+    let mut execution_bindings: BTreeMap<(u64, u64), CandidateExecutionBinding> = BTreeMap::new();
     for record in &records {
         let source_id = match record {
             ForgeSoupRecordSummary::Verify {
@@ -376,6 +448,30 @@ pub fn ingest_forge_soup(
             )));
         }
         fingerprints.insert(record.environment_fingerprint().to_owned());
+
+        let binding_key = (record.candidate_id(), record.trial_seed());
+        let binding = CandidateExecutionBinding::from_record(record);
+        if let Some(existing) = execution_bindings.get(&binding_key) {
+            if existing != &binding {
+                return Err(ForgeSoupAdapterError::Contract(format!(
+                    "candidate {} trial {} changes recipe/config/dataset/generation across evidence records",
+                    record.candidate_id(),
+                    record.trial_seed()
+                )));
+            }
+        } else {
+            execution_bindings.insert(binding_key, binding);
+        }
+
+        if let Some(expected_values) = report_facts.candidate_values.get(&record.candidate_id()) {
+            if expected_values != record.candidate_values() {
+                return Err(ForgeSoupAdapterError::Contract(format!(
+                    "candidate {} evidence recipe does not match Forge report",
+                    record.candidate_id()
+                )));
+            }
+        }
+
         if matches!(record, ForgeSoupRecordSummary::Measure { .. }) {
             measured_candidates.insert(record.candidate_id());
         }
@@ -419,8 +515,7 @@ pub fn ingest_forge_soup(
     let mut limitations = vec![
         "forge_candidate_score_and_pareto_membership_are_search_evidence_not_verified_claims"
             .to_owned(),
-        "soup_dry_run_pass_is_source_verification_evidence_not_a_scirust_verify_verdict"
-            .to_owned(),
+        "soup_dry_run_pass_is_source_verification_evidence_not_a_scirust_verify_verdict".to_owned(),
         "hub_local_process_execution_is_not_hostile_code_isolation".to_owned(),
         "hardware_scope_is_limited_to_the_recorded_environment_fingerprint".to_owned(),
     ];
@@ -449,6 +544,7 @@ pub fn ingest_forge_soup(
 struct ReportFacts {
     final_front_candidate_ids: Vec<u64>,
     objective_names: Vec<String>,
+    candidate_values: BTreeMap<u64, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -602,7 +698,12 @@ fn validate_report(report: &CampaignReport) -> Result<ReportFacts, ForgeSoupAdap
         .best
         .iter()
         .map(|candidate| &candidate.score)
-        .chain(report.best.iter().filter_map(|candidate| candidate.holdout_score.as_ref()))
+        .chain(
+            report
+                .best
+                .iter()
+                .filter_map(|candidate| candidate.holdout_score.as_ref()),
+        )
         .chain(report.final_baseline.iter())
         .chain(report.holdout_best.iter())
         .chain(report.holdout_baseline.iter())
@@ -617,6 +718,7 @@ fn validate_report(report: &CampaignReport) -> Result<ReportFacts, ForgeSoupAdap
         validate_score(score, &mut objective_names)?;
     }
 
+    let mut candidate_values = BTreeMap::new();
     let mut final_ids = BTreeSet::new();
     for candidate in &report.final_front {
         if candidate.values.is_empty() {
@@ -637,16 +739,25 @@ fn validate_report(report: &CampaignReport) -> Result<ReportFacts, ForgeSoupAdap
                 candidate.candidate_id
             ));
         }
+        candidate_values.insert(candidate.candidate_id, candidate.values.clone());
     }
     if let Some(best) = &report.best {
         if best.values.is_empty() || !best.score.valid {
             return contract("best candidate is structurally invalid");
+        }
+        if let Some(existing) = candidate_values.get(&best.candidate_id) {
+            if existing != &best.values {
+                return contract("best candidate recipe conflicts with final-front recipe");
+            }
+        } else {
+            candidate_values.insert(best.candidate_id, best.values.clone());
         }
     }
 
     Ok(ReportFacts {
         final_front_candidate_ids: final_ids.into_iter().collect(),
         objective_names: objective_names.into_iter().collect(),
+        candidate_values,
     })
 }
 
@@ -693,7 +804,8 @@ fn parse_evidence_tar(
     path: &Path,
     expected_domain_id: &str,
 ) -> Result<Vec<ForgeSoupRecordSummary>, ForgeSoupAdapterError> {
-    let mut file = File::open(path).map_err(|error| ForgeSoupAdapterError::Io(error.to_string()))?;
+    let mut file =
+        File::open(path).map_err(|error| ForgeSoupAdapterError::Io(error.to_string()))?;
     let mut records = Vec::new();
     let mut total_payload = 0u64;
     let mut root_seen = false;
@@ -737,18 +849,16 @@ fn parse_evidence_tar(
                 "evidence record {name:?} exceeds {MAX_EVIDENCE_RECORD_BYTES} bytes"
             ));
         }
-        total_payload = total_payload
-            .checked_add(size)
-            .ok_or_else(|| ForgeSoupAdapterError::Tar("evidence payload size overflow".to_owned()))?;
+        total_payload = total_payload.checked_add(size).ok_or_else(|| {
+            ForgeSoupAdapterError::Tar("evidence payload size overflow".to_owned())
+        })?;
         if total_payload > MAX_EVIDENCE_PAYLOAD_BYTES {
             return tar(format!(
                 "evidence payload exceeds {MAX_EVIDENCE_PAYLOAD_BYTES} bytes"
             ));
         }
         if records.len() >= MAX_EVIDENCE_FILES {
-            return tar(format!(
-                "evidence file count exceeds {MAX_EVIDENCE_FILES}"
-            ));
+            return tar(format!("evidence file count exceeds {MAX_EVIDENCE_FILES}"));
         }
         let size_usize = usize::try_from(size)
             .map_err(|_| ForgeSoupAdapterError::Tar("record size does not fit usize".to_owned()))?;
@@ -821,6 +931,9 @@ fn validate_evidence_record(
                 candidate_id,
                 trial_seed,
                 generation,
+                candidate_values: candidate.values,
+                config_sha256,
+                dataset_bytes,
                 passed,
                 returncode,
                 elapsed_ns,
@@ -873,6 +986,9 @@ fn validate_evidence_record(
                 candidate_id,
                 trial_seed,
                 generation,
+                candidate_values: candidate.values,
+                config_sha256,
+                dataset_bytes,
                 metrics,
                 environment_fingerprint,
                 source_evidence_id: evidence_id,
@@ -1026,14 +1142,18 @@ fn parse_tar_octal(bytes: &[u8], field: &str) -> Result<u64, ForgeSoupAdapterErr
 }
 
 fn tar_string(bytes: &[u8], field: &str) -> Result<String, ForgeSoupAdapterError> {
-    let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
     let value = std::str::from_utf8(&bytes[..end])
         .map_err(|_| ForgeSoupAdapterError::Tar(format!("tar {field} is not UTF-8")))?;
     Ok(value.to_owned())
 }
 
 fn digest_file(path: &Path) -> Result<ModelDigest, ForgeSoupAdapterError> {
-    let mut file = File::open(path).map_err(|error| ForgeSoupAdapterError::Io(error.to_string()))?;
+    let mut file =
+        File::open(path).map_err(|error| ForgeSoupAdapterError::Io(error.to_string()))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| ForgeSoupAdapterError::Io(error.to_string()))?;
     let mut hasher = Sha256::new();
@@ -1300,7 +1420,9 @@ mod tests {
             ],
         );
         let error = ingest_forge_soup(&report, &bundle).expect_err("missing measure must fail");
-        assert!(error.to_string().contains("no executed measurement evidence"));
+        assert!(error
+            .to_string()
+            .contains("no executed measurement evidence"));
     }
 
     #[test]
@@ -1326,5 +1448,59 @@ mod tests {
             .limitations()
             .iter()
             .any(|item| item.contains("multiple_environment_fingerprints")));
+    }
+
+    #[test]
+    fn rejects_candidate_recipe_drift_between_evidence_records() {
+        let fingerprint = format!("sha256:{}", "1".repeat(64));
+        let dir = TempDir::new();
+        let report = dir.path.join("report.json");
+        let bundle = dir.path.join("evidence.tar");
+        fs::write(&report, report_json()).unwrap();
+        let verify = verify_record(&fingerprint);
+        let mut measure: serde_json::Value =
+            serde_json::from_slice(&measure_record(&fingerprint)).unwrap();
+        measure["candidate"]["values"]["recipe.learning_rate"] =
+            serde_json::Value::String("3e-5".to_owned());
+        let measure = serde_json::to_vec(&measure).unwrap();
+        write_tar(
+            &bundle,
+            &[
+                ("evidence", b'5', b""),
+                ("evidence/verify.json", b'0', verify.as_slice()),
+                ("evidence/measure.json", b'0', measure.as_slice()),
+            ],
+        );
+        let error = ingest_forge_soup(&report, &bundle).expect_err("recipe drift must fail");
+        assert!(error.to_string().contains("recipe/config/dataset/generation"));
+    }
+
+    #[test]
+    fn rejects_final_front_recipe_mismatch_against_report() {
+        let fingerprint = format!("sha256:{}", "1".repeat(64));
+        let dir = TempDir::new();
+        let report = dir.path.join("report.json");
+        let bundle = dir.path.join("evidence.tar");
+        fs::write(&report, report_json()).unwrap();
+        let mut verify: serde_json::Value =
+            serde_json::from_slice(&verify_record(&fingerprint)).unwrap();
+        verify["candidate"]["values"]["recipe.learning_rate"] =
+            serde_json::Value::String("3e-5".to_owned());
+        let mut measure: serde_json::Value =
+            serde_json::from_slice(&measure_record(&fingerprint)).unwrap();
+        measure["candidate"]["values"]["recipe.learning_rate"] =
+            serde_json::Value::String("3e-5".to_owned());
+        let verify = serde_json::to_vec(&verify).unwrap();
+        let measure = serde_json::to_vec(&measure).unwrap();
+        write_tar(
+            &bundle,
+            &[
+                ("evidence", b'5', b""),
+                ("evidence/verify.json", b'0', verify.as_slice()),
+                ("evidence/measure.json", b'0', measure.as_slice()),
+            ],
+        );
+        let error = ingest_forge_soup(&report, &bundle).expect_err("report mismatch must fail");
+        assert!(error.to_string().contains("does not match Forge report"));
     }
 }
