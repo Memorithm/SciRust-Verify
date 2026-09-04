@@ -105,8 +105,6 @@ pub fn ingest_qualified_forge_soup(
         qualification_limitations: vec![
             "source_identity_values_require_trusted_hub_provenance_and_are_not_authenticated_by_this_adapter"
                 .to_owned(),
-            "candidate_recipe_binding_is_preserved_from_forge_hub_evidence_but_not_independently_rederived_from_the_campaign_report"
-                .to_owned(),
         ],
     })
 }
