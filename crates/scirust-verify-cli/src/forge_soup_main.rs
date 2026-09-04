@@ -53,7 +53,7 @@ struct Cli {
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(summary) => {
-            println!("{}", serde_json::to_string(&summary).expect("summary JSON"));
+            println!("{}", summary.to_json());
             ExitCode::SUCCESS
         }
         Err(ProcessError::Contract(message)) => {
@@ -79,7 +79,6 @@ impl ProcessError {
     }
 }
 
-#[derive(serde::Serialize)]
 struct ProcessSummary {
     contract: &'static str,
     dossier_media_type: &'static str,
@@ -88,6 +87,20 @@ struct ProcessSummary {
     model_quality_verified: bool,
     performance_verified: bool,
     output: String,
+}
+
+impl ProcessSummary {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "contract": self.contract,
+            "dossier_media_type": self.dossier_media_type,
+            "run_id": self.run_id.as_str(),
+            "contract_verdict": self.contract_verdict,
+            "model_quality_verified": self.model_quality_verified,
+            "performance_verified": self.performance_verified,
+            "output": self.output.as_str(),
+        })
+    }
 }
 
 fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
