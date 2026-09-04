@@ -100,17 +100,17 @@ impl ElasticRuntimeIngest {
             Observation::new(
                 "elastic_runtime",
                 "event_count",
-                ObservedValue::Integer(self.event_count as i64),
+                ObservedValue::UInt(self.event_count as u64),
             ),
             Observation::new(
                 "elastic_runtime",
                 "commit_count",
-                ObservedValue::Integer(self.commit_count as i64),
+                ObservedValue::UInt(self.commit_count as u64),
             ),
             Observation::new(
                 "elastic_runtime",
                 "rollback_count",
-                ObservedValue::Integer(self.rollback_count as i64),
+                ObservedValue::UInt(self.rollback_count as u64),
             ),
             Observation::new(
                 "elastic_runtime",
@@ -225,8 +225,11 @@ fn ingest_value(
         resource_ids.push(resource_id.to_owned());
 
         if let Some(events) = controller.get("events") {
+            let events = events
+                .as_array()
+                .ok_or_else(|| invalid("controller events must be an array"))?;
             event_count = event_count
-                .checked_add(validate_events(events)?)
+                .checked_add(validate_event_slice(events)?)
                 .ok_or_else(|| invalid("event count overflow"))?;
         }
 
@@ -251,7 +254,7 @@ fn ingest_value(
                 .and_then(Value::as_array)
                 .ok_or_else(|| invalid("cycle events must be an array"))?;
             event_count = event_count
-                .checked_add(validate_events(&Value::Array(events.clone()))?)
+                .checked_add(validate_event_slice(events)?)
                 .ok_or_else(|| invalid("event count overflow"))?;
             let has_commit = event_kind_present(events, "CommitExecuted");
             let has_rollback = event_kind_present(events, "RollbackExecuted");
@@ -291,10 +294,7 @@ fn ingest_value(
     })
 }
 
-fn validate_events(value: &Value) -> Result<usize, ElasticRuntimeAdapterError> {
-    let events = value
-        .as_array()
-        .ok_or_else(|| invalid("events must be an array"))?;
+fn validate_event_slice(events: &[Value]) -> Result<usize, ElasticRuntimeAdapterError> {
     if events.len() > MAX_EVENTS {
         return Err(invalid("event count exceeds bound"));
     }
