@@ -191,7 +191,7 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
         stderr_limit_bytes: 1,
     };
     let plan_digest = Digest::sha256_hex(
-        canonical_json(&[check.clone()])
+        canonical_json(std::slice::from_ref(&check))
             .map_err(ProcessError::internal)?
             .as_bytes(),
     );
@@ -225,10 +225,10 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
         })
         .map_err(ProcessError::internal)?;
     store
-        .write_plan(&[check.clone()], plan_digest)
+        .write_plan(std::slice::from_ref(&check), plan_digest)
         .map_err(ProcessError::internal)?;
     store
-        .write_claims(&[claim.clone()])
+        .write_claims(std::slice::from_ref(&claim))
         .map_err(ProcessError::internal)?;
     store
         .set_state(RunState::Running)
