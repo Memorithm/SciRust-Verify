@@ -155,14 +155,18 @@ impl ForgeSoupRecordSummary {
     /// Materialized SOUP config SHA-256 bound to this execution.
     pub fn config_sha256(&self) -> &str {
         match self {
-            Self::Verify { config_sha256, .. } | Self::Measure { config_sha256, .. } => config_sha256,
+            Self::Verify { config_sha256, .. } | Self::Measure { config_sha256, .. } => {
+                config_sha256
+            }
         }
     }
 
     /// Dataset size bound to this execution.
     pub fn dataset_bytes(&self) -> u64 {
         match self {
-            Self::Verify { dataset_bytes, .. } | Self::Measure { dataset_bytes, .. } => *dataset_bytes,
+            Self::Verify { dataset_bytes, .. } | Self::Measure { dataset_bytes, .. } => {
+                *dataset_bytes
+            }
         }
     }
 
@@ -202,7 +206,8 @@ impl ForgeSoupRecordSummary {
                 "forge_soup_identity",
                 "candidate_values",
                 ObservedValue::Json(
-                    serde_json::to_value(self.candidate_values()).unwrap_or(serde_json::Value::Null),
+                    serde_json::to_value(self.candidate_values())
+                        .unwrap_or(serde_json::Value::Null),
                 ),
             ),
             Observation::new(
@@ -1472,7 +1477,9 @@ mod tests {
             ],
         );
         let error = ingest_forge_soup(&report, &bundle).expect_err("recipe drift must fail");
-        assert!(error.to_string().contains("recipe/config/dataset/generation"));
+        assert!(error
+            .to_string()
+            .contains("recipe/config/dataset/generation"));
     }
 
     #[test]
