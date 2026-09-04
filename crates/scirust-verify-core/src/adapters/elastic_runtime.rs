@@ -12,11 +12,17 @@ use scirust_verify_model::{Digest, Observation, ObservedValue};
 use serde_json::Value;
 use thiserror::Error;
 
+/// Published ElasticXxx runtime evidence schema accepted by this adapter.
 pub const ELASTIC_RUNTIME_EVIDENCE_SCHEMA: &str = "elastic-runtime-evidence-v1";
+/// Media type of the qualified ElasticXxx runtime evidence artifact.
 pub const ELASTIC_RUNTIME_MEDIA_TYPE: &str = "application/vnd.elastic.runtime-evidence.v1+json";
+/// Process contract that produces the qualified runtime evidence artifact.
 pub const ELASTIC_RUNTIME_CONTRACT: &str = "elastic.hub.run@1.0.0";
+/// Exact ElasticXxx PR head qualified when this adapter was published.
 pub const ELASTIC_RUNTIME_SOURCE_HEAD: &str = "571d0deb8921df54502fbb35909dd8830cbf4fb4";
+/// Exact ElasticXxx merge commit qualified when this adapter was published.
 pub const ELASTIC_RUNTIME_SOURCE_MERGE: &str = "9e51879b96e54c812b6a265fe5901e960bbe6250";
+/// Maximum accepted runtime evidence artifact size in bytes.
 pub const ELASTIC_RUNTIME_MAX_BYTES: usize = 1024 * 1024;
 const MAX_CONTROLLERS: usize = 8192;
 const MAX_CYCLES: usize = 8192;
@@ -24,15 +30,22 @@ const MAX_EVENTS: usize = 8192;
 const MAX_RESOURCE_ID_BYTES: usize = 256;
 const MAX_EVENT_DETAIL_BYTES: usize = 64 * 1024;
 
+/// One producer-owned ElasticXxx cycle decision preserved as source evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ElasticRuntimeDecision {
+    /// Stable resource identity declared by the source runtime evidence.
     pub resource_id: String,
+    /// Zero-based cycle position within the source controller evidence.
     pub cycle_index: usize,
+    /// Whether ElasticXxx reported a committed transaction for this cycle.
     pub committed: bool,
+    /// Whether ElasticXxx reported a rolled-back transaction for this cycle.
     pub rolled_back: bool,
+    /// Optional source verification label reported by ElasticXxx.
     pub verification: Option<String>,
 }
 
+/// Validated, source-preserving view of one ElasticXxx runtime evidence artifact.
 #[derive(Clone, Debug)]
 pub struct ElasticRuntimeIngest {
     digest: Digest,
@@ -45,34 +58,42 @@ pub struct ElasticRuntimeIngest {
 }
 
 impl ElasticRuntimeIngest {
+    /// Returns the digest of the exact ingested source artifact bytes.
     pub fn digest(&self) -> &Digest {
         &self.digest
     }
 
+    /// Returns the qualified ElasticXxx command encoded by the source artifact.
     pub fn command(&self) -> &str {
         &self.command
     }
 
+    /// Returns resource identities in source controller order.
     pub fn resource_ids(&self) -> &[String] {
         &self.resource_ids
     }
 
+    /// Returns the total number of validated source runtime events.
     pub const fn event_count(&self) -> usize {
         self.event_count
     }
 
+    /// Returns the number of cycles marked committed by ElasticXxx.
     pub const fn commit_count(&self) -> usize {
         self.commit_count
     }
 
+    /// Returns the number of cycles marked rolled back by ElasticXxx.
     pub const fn rollback_count(&self) -> usize {
         self.rollback_count
     }
 
+    /// Returns producer-owned transaction decisions preserved from the source artifact.
     pub fn decisions(&self) -> &[ElasticRuntimeDecision] {
         &self.decisions
     }
 
+    /// Converts validated source facts into SciRust-Verify observations without reinterpreting them.
     pub fn observations(&self) -> Vec<Observation> {
         vec![
             Observation::new(
@@ -128,6 +149,7 @@ impl ElasticRuntimeIngest {
         ]
     }
 
+    /// Returns explicit non-claims that accompany every ElasticXxx evidence ingestion.
     pub fn limitations() -> impl Iterator<Item = &'static str> {
         [
             "ElasticXxx COMMIT/ROLLBACK remains a source runtime decision, not a SciRust-Verify verdict.",
@@ -138,20 +160,27 @@ impl ElasticRuntimeIngest {
     }
 }
 
+/// Errors raised while validating or reading qualified ElasticXxx runtime evidence.
 #[derive(Debug, Error)]
 pub enum ElasticRuntimeAdapterError {
+    /// The supplied path is not a regular non-symlink file.
     #[error("Elastic runtime evidence is not a regular file")]
     NotRegularFile,
+    /// The supplied artifact exceeds the adapter's fixed byte bound.
     #[error("Elastic runtime evidence exceeds {ELASTIC_RUNTIME_MAX_BYTES} bytes")]
     TooLarge,
+    /// The supplied bytes are not valid JSON.
     #[error("invalid Elastic runtime evidence JSON: {0}")]
     Json(#[from] serde_json::Error),
+    /// The JSON is valid but violates the qualified runtime evidence contract.
     #[error("invalid Elastic runtime evidence: {0}")]
     Invalid(String),
+    /// The artifact could not be inspected or read from storage.
     #[error("cannot read Elastic runtime evidence: {0}")]
     Io(#[from] std::io::Error),
 }
 
+/// Reads and validates one qualified ElasticXxx runtime evidence file.
 pub fn ingest_elastic_runtime(
     path: &Path,
 ) -> Result<ElasticRuntimeIngest, ElasticRuntimeAdapterError> {
