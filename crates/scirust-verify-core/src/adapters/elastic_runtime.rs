@@ -15,10 +15,8 @@ use thiserror::Error;
 pub const ELASTIC_RUNTIME_EVIDENCE_SCHEMA: &str = "elastic-runtime-evidence-v1";
 pub const ELASTIC_RUNTIME_MEDIA_TYPE: &str = "application/vnd.elastic.runtime-evidence.v1+json";
 pub const ELASTIC_RUNTIME_CONTRACT: &str = "elastic.hub.run@1.0.0";
-pub const ELASTIC_RUNTIME_SOURCE_HEAD: &str =
-    "571d0deb8921df54502fbb35909dd8830cbf4fb4";
-pub const ELASTIC_RUNTIME_SOURCE_MERGE: &str =
-    "9e51879b96e54c812b6a265fe5901e960bbe6250";
+pub const ELASTIC_RUNTIME_SOURCE_HEAD: &str = "571d0deb8921df54502fbb35909dd8830cbf4fb4";
+pub const ELASTIC_RUNTIME_SOURCE_MERGE: &str = "9e51879b96e54c812b6a265fe5901e960bbe6250";
 pub const ELASTIC_RUNTIME_MAX_BYTES: usize = 1024 * 1024;
 const MAX_CONTROLLERS: usize = 8192;
 const MAX_CYCLES: usize = 8192;
@@ -177,7 +175,9 @@ fn ingest_value(
     root: Value,
     digest: Digest,
 ) -> Result<ElasticRuntimeIngest, ElasticRuntimeAdapterError> {
-    let object = root.as_object().ok_or_else(|| invalid("root must be an object"))?;
+    let object = root
+        .as_object()
+        .ok_or_else(|| invalid("root must be an object"))?;
     require_string(object.get("evidence_schema"), "evidence_schema")?
         .eq(ELASTIC_RUNTIME_EVIDENCE_SCHEMA)
         .then_some(())
@@ -187,7 +187,9 @@ fn ingest_value(
         return Err(invalid("qualified v1 adapter requires command=run"));
     }
     if object.get("source").and_then(Value::as_str) != Some("operator-config") {
-        return Err(invalid("qualified v1 adapter requires source=operator-config"));
+        return Err(invalid(
+            "qualified v1 adapter requires source=operator-config",
+        ));
     }
     if object.get("config_version").and_then(Value::as_u64) != Some(1) {
         return Err(invalid("qualified v1 adapter requires config_version=1"));
@@ -217,7 +219,9 @@ fn ingest_value(
             || resource_id.len() > MAX_RESOURCE_ID_BYTES
             || resource_id.chars().any(char::is_control)
         {
-            return Err(invalid("resource_id is empty, oversized, or contains controls"));
+            return Err(invalid(
+                "resource_id is empty, oversized, or contains controls",
+            ));
         }
         if !seen_resources.insert(resource_id.to_owned()) {
             return Err(invalid("duplicate resource_id"));
@@ -259,10 +263,14 @@ fn ingest_value(
             let has_commit = event_kind_present(events, "CommitExecuted");
             let has_rollback = event_kind_present(events, "RollbackExecuted");
             if committed != has_commit {
-                return Err(invalid("committed flag contradicts CommitExecuted evidence"));
+                return Err(invalid(
+                    "committed flag contradicts CommitExecuted evidence",
+                ));
             }
             if rolled_back != has_rollback {
-                return Err(invalid("rolled_back flag contradicts RollbackExecuted evidence"));
+                return Err(invalid(
+                    "rolled_back flag contradicts RollbackExecuted evidence",
+                ));
             }
             if committed {
                 commit_count += 1;
@@ -333,10 +341,7 @@ fn require_string<'a>(
         .ok_or_else(|| invalid(format!("{name} must be a string")))
 }
 
-fn require_bool(
-    value: Option<&Value>,
-    name: &str,
-) -> Result<bool, ElasticRuntimeAdapterError> {
+fn require_bool(value: Option<&Value>, name: &str) -> Result<bool, ElasticRuntimeAdapterError> {
     value
         .and_then(Value::as_bool)
         .ok_or_else(|| invalid(format!("{name} must be a boolean")))
