@@ -1,7 +1,7 @@
 schema_version: 1
 kind: memorithm_ml_maturity_program
 status: active
-last_updated: "2026-08-31"
+last_updated: "2026-09-04"
 repository: Memorithm/SciRust-Verify
 objective: >-
   Raise ML evidence and verification maturity to 5/5 by making model quality,
@@ -20,6 +20,32 @@ score_policy:
     - universalizing_single_host_or_single_GPU_evidence
     - accepting_self_reported_PASS_without_raw_evidence
     - combining_quality_latency_and_memory_into_an_opaque_score_without_declared_policy
+verified_slices:
+  - id: FORGE_SOUP_source_preserving_evidence_ingestion_v1
+    status: complete
+    pull_request: 29
+    final_exact_head: eb2845a8d0ee33c71d0804ac47b34fa663bd3ad0
+    merge_commit: 89f485633e842017781778eb1568b5306e0a5570
+    required_CI: CI_92_success_on_final_exact_head
+    source_identities:
+      forge_domain_merge: 1385c71a541419f15a558a5e94bc8a4a60567a4a
+      forge_runner_merge: 9e1f3fc568c176f401735c121780d9fbe6834f5d
+      hub_edge_merge: 074cf2c6e00a0b142fe46d1558c8b32df9228859
+      soup_qualified_commit: 05b646523727925990530667e7012ede50bd30b2
+    scope: >-
+      SciRust-Verify can ingest the qualified Hub → Forge → SOUP report and
+      evidence tar, preserve raw benchmark/timing measurements and environment
+      fingerprints, and revalidate candidate recipe/config/dataset/generation
+      identity and final-front measurement coverage. Search scores, Pareto
+      membership and SOUP dry-run success remain observations rather than
+      self-authorizing verification verdicts.
+    limits:
+      - source_identity_origin_still_requires_trusted_Hub_provenance
+      - no_cross_host_comparability_is_established
+      - no_hardware_portability_is_established
+      - no_hostile_code_isolation_is_established
+      - no_model_quality_claim_is_independently_verified_by_this_adapter
+      - this_slice_does_not_complete_VML0_VML1_VML2_VML3_or_VML4
 priority_program:
   - id: VML0
     name: ML evidence envelope
