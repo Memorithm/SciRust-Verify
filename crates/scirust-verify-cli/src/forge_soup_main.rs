@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -107,10 +107,8 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
     )
     .map_err(|error| ProcessError::Contract(error.to_string()))?;
 
-    let work_root = output_parent.join(format!(
-        ".scirust-verify-forge-soup-{}",
-        std::process::id()
-    ));
+    let work_root =
+        output_parent.join(format!(".scirust-verify-forge-soup-{}", std::process::id()));
     if work_root.exists() {
         return Err(ProcessError::Internal(format!(
             "temporary work root already exists: {}",
@@ -129,10 +127,7 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
     let check_id = CheckId::new("forge-soup:qualified-evidence-v1");
 
     let mut claim_parameters = serde_json::Map::new();
-    claim_parameters.insert(
-        "contract".to_owned(),
-        serde_json::json!(DOSSIER_CONTRACT),
-    );
+    claim_parameters.insert("contract".to_owned(), serde_json::json!(DOSSIER_CONTRACT));
     claim_parameters.insert(
         "forge_domain_merge".to_owned(),
         serde_json::json!(FORGE_SOUP_DOMAIN_MERGE),
@@ -233,9 +228,9 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
         Observation::new(
             "forge_soup_ingestion",
             "final_front_candidate_ids",
-            ObservedValue::Json(serde_json::json!(
-                qualified.inner().final_front_candidate_ids()
-            )),
+            ObservedValue::Json(serde_json::json!(qualified
+                .inner()
+                .final_front_candidate_ids())),
         ),
         Observation::new(
             "forge_soup_ingestion",
@@ -325,8 +320,8 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
         )],
         strict: true,
     };
-    let report_json = scirust_verify_report::render_json(&store, &report_ctx)
-        .map_err(ProcessError::internal)?;
+    let report_json =
+        scirust_verify_report::render_json(&store, &report_ctx).map_err(ProcessError::internal)?;
     let report_md = scirust_verify_report::render_markdown(&store, &report_ctx)
         .map_err(ProcessError::internal)?;
     store
@@ -366,18 +361,10 @@ fn archive_dossier(run_dir: &Path, output: &Path) -> Result<(), ProcessError> {
     collect_regular_files(run_dir, run_dir, &mut files)?;
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let parent = output.parent().unwrap_or_else(|| Path::new("."));
-    let temp = parent.join(format!(".{}.{}.tmp", output.file_name().unwrap_or_default().to_string_lossy(), std::process::id()));
-    if temp.exists() {
-        return Err(ProcessError::Internal(format!(
-            "temporary dossier output already exists: {}",
-            temp.display()
-        )));
-    }
     let mut writer = OpenOptions::new()
         .create_new(true)
         .write(true)
-        .open(&temp)
+        .open(output)
         .map_err(ProcessError::internal)?;
     let mut total = 0u64;
 
@@ -411,14 +398,10 @@ fn archive_dossier(run_dir: &Path, output: &Path) -> Result<(), ProcessError> {
 
     if let Err(error) = result {
         drop(writer);
-        let _ = fs::remove_file(&temp);
+        let _ = fs::remove_file(output);
         return Err(error);
     }
     drop(writer);
-    fs::rename(&temp, output).map_err(|error| {
-        let _ = fs::remove_file(&temp);
-        ProcessError::internal(error)
-    })?;
     Ok(())
 }
 
@@ -465,7 +448,9 @@ fn collect_regular_files(
 fn validate_archive_path(path: &str) -> Result<(), ProcessError> {
     if path.is_empty()
         || path.starts_with('/')
-        || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
         || !path.is_ascii()
         || format!("dossier/{path}").len() > 100
     {
@@ -506,7 +491,9 @@ fn write_octal(field: &mut [u8], value: u64) -> Result<(), ProcessError> {
     let width = field.len().saturating_sub(1);
     let text = format!("{value:0width$o}", width = width);
     if text.len() != width {
-        return Err(ProcessError::Internal("tar numeric field overflow".to_owned()));
+        return Err(ProcessError::Internal(
+            "tar numeric field overflow".to_owned(),
+        ));
     }
     field.fill(0);
     field[..width].copy_from_slice(text.as_bytes());
@@ -516,6 +503,7 @@ fn write_octal(field: &mut [u8], value: u64) -> Result<(), ProcessError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
@@ -562,6 +550,19 @@ mod tests {
             .trim_end_matches('\0');
         assert_eq!(first_name, "dossier/a.json");
         assert_eq!(first[156], b'0');
+        let _ = fs::remove_file(output);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn archive_never_overwrites_existing_output() {
+        let dir = temp_dir();
+        fs::write(dir.join("run.json"), b"{}\n").unwrap();
+        let output = dir.with_extension("tar");
+        fs::write(&output, b"sentinel").unwrap();
+        let error = archive_dossier(&dir, &output).expect_err("existing output must fail");
+        assert!(matches!(error, ProcessError::Internal(_)));
+        assert_eq!(fs::read(&output).unwrap(), b"sentinel");
         let _ = fs::remove_file(output);
         let _ = fs::remove_dir_all(dir);
     }
