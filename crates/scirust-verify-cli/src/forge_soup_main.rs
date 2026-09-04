@@ -191,7 +191,7 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
         stderr_limit_bytes: 1,
     };
     let plan_digest = Digest::sha256_hex(
-        canonical_json(std::slice::from_ref(&check))
+        canonical_json(&std::slice::from_ref(&check))
             .map_err(ProcessError::internal)?
             .as_bytes(),
     );
