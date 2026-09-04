@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "scirust-verify-forge-soup"
 path = "src/forge_soup_main.rs"
 
+[[bin]]
+name = "scirust-verify-elastic"
+path = "src/elastic_runtime_main.rs"
+
 [dependencies]
 scirust-verify-model = { workspace = true }
 scirust-verify-runner = { workspace = true }
