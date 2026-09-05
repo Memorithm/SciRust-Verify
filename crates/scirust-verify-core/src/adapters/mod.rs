@@ -6,6 +6,7 @@
 mod elastic_runtime;
 mod forge_soup;
 mod forge_soup_qualified;
+mod scicapsule;
 
 pub use elastic_runtime::{
     ingest_elastic_runtime, ElasticRuntimeAdapterError, ElasticRuntimeDecision,
@@ -20,4 +21,10 @@ pub use forge_soup::{
 };
 pub use forge_soup_qualified::{
     ingest_qualified_forge_soup, ForgeSoupQualifiedIngest, ForgeSoupSourceIdentity,
+};
+pub use scicapsule::{
+    ingest_scicapsule_execution, SciCapsuleAdapterError, SciCapsuleEnvironmentScope,
+    SciCapsuleExecutionIngest, SciCapsuleRuntimeIdentity, SCICAPSULE_EXECUTION_CONTRACT,
+    SCICAPSULE_EXECUTION_MAX_BYTES, SCICAPSULE_EXECUTION_MEDIA_TYPE, SCICAPSULE_SOURCE_HEAD,
+    SCICAPSULE_SOURCE_MERGE, SCICAPSULE_SOURCE_RESULT_MEDIA_TYPE,
 };
