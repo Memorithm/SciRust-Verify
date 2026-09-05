@@ -6,6 +6,7 @@
 mod elastic_runtime;
 mod forge_soup;
 mod forge_soup_qualified;
+mod nnis_parity;
 mod scicapsule;
 
 pub use elastic_runtime::{
@@ -21,6 +22,12 @@ pub use forge_soup::{
 };
 pub use forge_soup_qualified::{
     ingest_qualified_forge_soup, ForgeSoupQualifiedIngest, ForgeSoupSourceIdentity,
+};
+pub use nnis_parity::{
+    ingest_nnis_parity, NnisParityAdapterError, NnisParityIngest, NNIS_PARITY_EVIDENCE_MAX_BYTES,
+    NNIS_PARITY_EVIDENCE_MEDIA_TYPE, NNIS_PARITY_RECORD_KIND, NNIS_PARITY_SOURCE_HEAD,
+    NNIS_PARITY_SOURCE_MERGE, NNIS_PARITY_SUITE_KIND, NNIS_PARITY_VALIDATION_CONTRACT,
+    NNIS_PARITY_VALIDATION_MAX_BYTES, NNIS_PARITY_VALIDATION_MEDIA_TYPE,
 };
 pub use scicapsule::{
     ingest_scicapsule_execution, SciCapsuleAdapterError, SciCapsuleEnvironmentScope,

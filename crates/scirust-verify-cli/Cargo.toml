@@ -24,6 +24,10 @@ path = "src/elastic_runtime_main.rs"
 name = "scirust-verify-scicapsule"
 path = "src/scicapsule_main.rs"
 
+[[bin]]
+name = "scirust-verify-nnis-parity"
+path = "src/nnis_parity_main.rs"
+
 [dependencies]
 scirust-verify-model = { workspace = true }
 scirust-verify-runner = { workspace = true }
