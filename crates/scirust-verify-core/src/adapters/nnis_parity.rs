@@ -274,7 +274,8 @@ fn ingest_values(
     if require_string(object.get("contract"), "contract")? != NNIS_PARITY_VALIDATION_CONTRACT {
         return Err(invalid("unsupported validation contract"));
     }
-    if require_string(object.get("media_type"), "media_type")? != NNIS_PARITY_VALIDATION_MEDIA_TYPE {
+    if require_string(object.get("media_type"), "media_type")? != NNIS_PARITY_VALIDATION_MEDIA_TYPE
+    {
         return Err(invalid("unsupported validation media_type"));
     }
     if require_string(object.get("status"), "status")? != "validated" {
@@ -301,10 +302,8 @@ fn ingest_values(
         ));
     }
 
-    let execution_git_commit = require_git_commit(
-        object.get("execution_git_commit"),
-        "execution_git_commit",
-    )?;
+    let execution_git_commit =
+        require_git_commit(object.get("execution_git_commit"), "execution_git_commit")?;
     if execution_git_commit != evidence_commit {
         return Err(invalid(
             "validation execution_git_commit does not match parity_evidence",
@@ -342,11 +341,8 @@ fn ingest_values(
         ));
     }
 
-    let parity_levels = require_unique_text_array(
-        object.get("parity_levels"),
-        "parity_levels",
-        MAX_LIST_ITEMS,
-    )?;
+    let parity_levels =
+        require_unique_text_array(object.get("parity_levels"), "parity_levels", MAX_LIST_ITEMS)?;
     for level in &parity_levels {
         if level != "generation_trajectory" && level != "logit_and_generation" {
             return Err(invalid("unsupported NNIS parity level"));
