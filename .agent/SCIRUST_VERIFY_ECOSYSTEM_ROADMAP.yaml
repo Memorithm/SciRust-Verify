@@ -1,7 +1,7 @@
 schema_version: 1
 kind: scirust_verify_ecosystem_agent_roadmap
 status: active
-last_updated: "2026-09-04"
+last_updated: "2026-09-05"
 repository: Memorithm/SciRust-Verify
 intended_consumer: autonomous_coding_agent
 merge_policy: never_merge_this_file_to_default_branch_unless_user_explicitly_requests
@@ -32,6 +32,10 @@ verified_current_facts:
   - Forge_SOUP_campaign_evidence_ingestion_is_published_as_a_source_preserving_adapter
   - Forge_SOUP_adapter_revalidates_candidate_recipe_config_dataset_generation_metric_and_environment_identity_without_deriving_VERIFIED_from_search_scores
   - Forge_SOUP_source_merge_values_are_compared_against_qualified_identities_but_their_origin_still_requires_trusted_Hub_provenance
+  - SciCapsule_v2_execution_evidence_has_a_source_preserving_scoped_dossier_process
+  - ElasticXxx_runtime_evidence_has_a_source_preserving_scoped_dossier_process
+  - NNIS_NNML1_parity_evidence_has_a_qualified_exact_byte_binding_and_validation_envelope_dossier_process
+  - NNIS_parity_adapter_does_not_reimplement_checkpoint_tokenizer_greedy_logit_same_head_or_promotion_semantics
 
 invariants:
   - evidence_integrity_does_not_increase_the_scope_of_a_claim
@@ -61,7 +65,7 @@ ownership:
     - ElasticXxx_runtime_commit_or_rollback_policy
     - Forge_candidate_search_or_selection_strategy
     - FLAT_ATTENTION_attention_correctness_definition
-    - NNIS_model_runtime_or_performance_promotion_policy
+    - NNIS_model_runtime_parity_performance_or_promotion_policy
     - SLHAv2_KV_quality_semantics
     - nonlocal_relativity_physical_or_scientific_interpretation
 
@@ -86,31 +90,45 @@ ecosystem_interfaces:
     rule: preserve_SciRust_acceptance_semantics_and_ingest_completed_evidence_without_reimplementing_the_scientific_stack
   Memorithm/scirust-hub:
     relationship: orchestration_and_immutable_artifact_partner
-    status: active_narrow_artifact_source_pending_Verify_process_contract
-    published_source:
-      capability: llm.optimize.forge_soup@1.0.0
-      hub_merge: 074cf2c6e00a0b142fe46d1558c8b32df9228859
-      evidence_bundle: deterministic_Forge_SOUP_report_and_evidence_tar
+    status: active_published_scoped_Verify_process_edges
+    published:
+      - capability: inference.nnis.parity_verify@1.0.0
+        hub_pull_request: 37
+        hub_final_exact_head: 9e95e7d6a141b3f06bfc9effac51007bdfe9b1c2
+        hub_merge: 0e484d9f9903fe0f0fcb7111e0191dfb14d958b4
+        source_validation_capability: inference.nnis.parity_validate@1.0.0
+      - capability: capsule.verify.scicapsule@1.0.0
+        hub_pull_request: 36
+        hub_final_exact_head: 9baa87d175b1282df547a218849b81f090882244
+        hub_merge: 4591869ab10835708d18c836d0c97a73bc868d9c
+      - source_capability: llm.optimize.forge_soup@1.0.0
+        hub_merge: 074cf2c6e00a0b142fe46d1558c8b32df9228859
+        evidence_bundle: deterministic_Forge_SOUP_report_and_evidence_tar
     desired:
-      - publish_a_stable_Verify_process_surface_for_qualified_Forge_SOUP_ingestion
-      - Hub_invokes_Verify_as_a_separate_versioned_component
+      - preserve_scoped_Verify_components_as_separate_versioned_processes
       - Evidence_Dossier_is_retained_as_immutable_Hub_artifact
-      - Hub_does_not_recompute_Verify_verdict_semantics
+      - Hub_does_not_recompute_or_upgrade_Verify_verdict_semantics
+      - extend_to_additional_sources_only_after_versioned_source_contracts_exist
     limits:
-      - current_adapter_consumes_Hub_produced_artifacts_but_Hub_does_not_yet_invoke_SciRust_Verify
-      - source_merge_values_need_trusted_Hub_provenance_for_origin_authentication
+      - source_contract_origin_still_requires_trusted_Hub_or_execution_provenance
+      - HML4_qualification_campaign_orchestration_is_not_established_by_a_process_adapter
   Memorithm/SciCapsule:
     relationship: portable_artifact_identity_trust_and_execution_evidence_source
-    status: planned
+    status: active_narrow_v2_execution_adapter
     desired:
-      - record_capsule_digest_signature_policy_and_execution_result_as_evidence
+      - preserve_capsule_digest_signature_policy_and_execution_result_as_evidence
       - keep_SciCapsule_local_trust_decision_distinct_from_Verify_claim_verdict
+    limits:
+      - bounded_process_execution_is_not_an_OS_sandbox
+      - trust_authorization_is_not_scientific_correctness
   Memorithm/ElasticXxx:
     relationship: adaptive_runtime_evidence_source
-    status: planned
+    status: active_narrow_runtime_evidence_adapter
     desired:
-      - ingest_observation_plan_actuation_verification_and_commit_or_rollback_records
+      - preserve_observation_plan_actuation_verification_and_commit_or_rollback_records
       - preserve_Elastic_runtime_decision_as_source_fact_not_generic_Verify_verdict
+    limits:
+      - Verify_does_not_choose_or_reinterpret_Elastic_policy
   Memorithm/forge:
     relationship: candidate_search_evidence_source
     status: active_narrow_Forge_SOUP_adapter
@@ -142,9 +160,35 @@ ecosystem_interfaces:
       - prevent_microbenchmark_results_from_becoming_end_to_end_runtime_claims
   Memorithm/NVIDIA-Native-Inference-Stack:
     relationship: model_runtime_correctness_performance_and_representation_evidence_source
-    status: planned
-    desired:
-      - preserve_environment_fingerprint_model_workload_precision_and_exact_head_identity
+    status: active_narrow_NNML1_parity_validation_adapter
+    published:
+      source_contract: nnis.nnml1.parity-validation@1.0.0
+      source_media_type: application/vnd.nnis.nnml1.parity-evidence.v1+json
+      validation_media_type: application/vnd.nnis.nnml1.parity-validation.v1+json
+      nnis_pull_request: 114
+      nnis_final_exact_head: c74b6b04c45e320c86cdd973b31f49f43c720681
+      nnis_merge_commit: 0ae4b0d4659c8de9b8a8322ed6ab7f8e110b53f2
+      verify_pull_request: 33
+      verify_final_exact_head: a120c54ed05b058d9347691d0036eaaaa831df41
+      verify_merge_commit: 593692aea76b90e50899e733344ffa4cf61ba380
+      verify_process: scirust-verify-nnis-parity
+      verify_contract: scirust-verify.nnis-parity-dossier@1.0.0
+      hub_capabilities:
+        - inference.nnis.parity_validate@1.0.0
+        - inference.nnis.parity_verify@1.0.0
+      hub_merge_commit: 0e484d9f9903fe0f0fcb7111e0191dfb14d958b4
+    guarantees:
+      - exact_original_parity_evidence_bytes_are_SHA_256_bound_to_the_NNIS_validation_result
+      - validation_contract_media_version_scope_kind_and_execution_commit_are_revalidated
+      - NNIS_checkpoint_specs_parity_levels_reference_runtimes_and_execution_backends_are_preserved_as_source_observations
+      - NNIS_validation_result_is_sealed_as_a_content_addressed_dossier_attachment
+      - promotion_serving_performance_and_general_model_family_claim_inflation_fail_closed
+    limits:
+      - NNIS_remains_authoritative_for_checkpoint_tokenizer_greedy_logit_same_head_and_promotion_semantics
+      - Verify_does_not_rerun_NNIS_CUDA_checkpoints_or_reference_runtimes
+      - no_new_physical_model_parity_evidence_is_created
+      - no_general_model_family_serving_performance_cross_host_Jetson_ARM64_or_promotion_claim_is_established
+      - authentic_origin_of_the_NNIS_validation_result_requires_trusted_Hub_or_execution_provenance
   Memorithm/SLHAv2:
     relationship: real_model_quality_memory_and_throughput_evidence_source
     status: planned
@@ -219,13 +263,38 @@ roadmap:
           bundle as source-preserving observations, revalidate candidate and
           measurement identity, and retain explicit limitations without deriving
           a SciRust-Verify VERIFIED verdict from search selection or SOUP dry-run.
+      - id: VER6_NNIS_NNML1_parity_binding_v1
+        status: complete
+        pull_request: 33
+        final_exact_head: a120c54ed05b058d9347691d0036eaaaa831df41
+        merge_commit: 593692aea76b90e50899e733344ffa4cf61ba380
+        required_CI: CI_110_success_on_final_exact_head_including_dogfood
+        nnis_pull_request: 114
+        nnis_final_exact_head: c74b6b04c45e320c86cdd973b31f49f43c720681
+        nnis_merge_commit: 0ae4b0d4659c8de9b8a8322ed6ab7f8e110b53f2
+        hub_pull_request: 37
+        hub_final_exact_head: 9e95e7d6a141b3f06bfc9effac51007bdfe9b1c2
+        hub_merge_commit: 0e484d9f9903fe0f0fcb7111e0191dfb14d958b4
+        scope: >-
+          Independently bind the exact original NNIS parity-evidence bytes to the
+          qualified NNIS validation result by SHA-256, validate the narrow result
+          envelope and cross-artifact execution identity, preserve NNIS parity
+          facts as source observations, and seal the validation result into the
+          dossier without reimplementing NNIS parity or promotion semantics.
+        limits:
+          - no_new_physical_CUDA_or_model_parity_execution
+          - no_general_model_family_or_serving_performance_claim
+          - no_cross_host_or_hardware_portability_claim
+          - no_runtime_or_model_family_promotion_authorization
+          - source_origin_authentication_requires_trusted_Hub_or_execution_provenance
     sequence:
       - maintain_SciRust_adapter
-      - publish_Hub_component_and_artifact_contract_for_Verify
-      - add_SciCapsule_identity_trust_execution_adapter
-      - add_ElasticXxx_cycle_adapter
+      - maintain_published_Hub_process_and_artifact_contracts_for_Verify
+      - maintain_SciCapsule_identity_trust_execution_adapter
+      - maintain_ElasticXxx_cycle_adapter
       - maintain_and_extend_Forge_campaign_adapters
-      - add_FLAT_NNIS_and_SLHAv2_benchmark_runtime_adapters
+      - preserve_and_extend_NNIS_adapters_from_versioned_source_contracts
+      - add_FLAT_and_SLHAv2_benchmark_runtime_adapters
       - add_nonlocal_relativity_experiment_adapter
     rule: one_adapter_must_preserve_source_semantics_instead_of_flattening_all_inputs_to_pass_fail
   - id: VER7
