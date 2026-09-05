@@ -327,10 +327,8 @@ fn ingest_value(
         "matched_signers",
         MAX_SIGNERS,
     )?;
-    let required_signatures_u64 = require_u64(
-        object.get("required_signatures"),
-        "required_signatures",
-    )?;
+    let required_signatures_u64 =
+        require_u64(object.get("required_signatures"), "required_signatures")?;
     let required_signatures = u32::try_from(required_signatures_u64)
         .map_err(|_| invalid("required_signatures exceeds u32"))?;
     if required_signatures == 0
@@ -388,7 +386,11 @@ fn ingest_value(
         &["schema_version", "media_type", "sha256"],
         "source_result",
     )?;
-    if require_u64(source_result.get("schema_version"), "source_result.schema_version")? != 1 {
+    if require_u64(
+        source_result.get("schema_version"),
+        "source_result.schema_version",
+    )? != 1
+    {
         return Err(invalid("source_result.schema_version must be 1"));
     }
     if require_string(source_result.get("media_type"), "source_result.media_type")?
@@ -454,7 +456,9 @@ fn require_bounded_text(
 fn require_sha(value: Option<&Value>, field: &str) -> Result<String, SciCapsuleAdapterError> {
     let digest = require_string(value, field)?;
     if !is_lower_hex_sha256(digest) {
-        return Err(invalid(format!("{field} must be a lowercase SHA-256 hex digest")));
+        return Err(invalid(format!(
+            "{field} must be a lowercase SHA-256 hex digest"
+        )));
     }
     Ok(digest.to_owned())
 }
@@ -491,7 +495,9 @@ fn require_unique_text_array(
         .and_then(Value::as_array)
         .ok_or_else(|| invalid(format!("{field} must be an array")))?;
     if array.is_empty() || array.len() > max_items {
-        return Err(invalid(format!("{field} must contain 1..={max_items} entries")));
+        return Err(invalid(format!(
+            "{field} must contain 1..={max_items} entries"
+        )));
     }
     let mut seen = BTreeSet::new();
     let mut output = Vec::with_capacity(array.len());
@@ -513,7 +519,9 @@ fn require_exact_keys(
     let expected: BTreeSet<&str> = expected.iter().copied().collect();
     let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
     if actual != expected {
-        return Err(invalid(format!("{field} contains missing or unknown fields")));
+        return Err(invalid(format!(
+            "{field} contains missing or unknown fields"
+        )));
     }
     Ok(())
 }
