@@ -113,10 +113,8 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
     let ingested = ingest_scicapsule_execution(&cli.evidence)
         .map_err(|error| ProcessError::Contract(error.to_string()))?;
 
-    let work_root = output_parent.join(format!(
-        ".scirust-verify-scicapsule-{}",
-        std::process::id()
-    ));
+    let work_root =
+        output_parent.join(format!(".scirust-verify-scicapsule-{}", std::process::id()));
     if work_root.exists() {
         return Err(ProcessError::Internal(format!(
             "temporary work root already exists: {}",
