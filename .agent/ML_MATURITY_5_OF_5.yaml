@@ -1,7 +1,7 @@
 schema_version: 1
 kind: memorithm_ml_maturity_program
 status: active
-last_updated: "2026-09-04"
+last_updated: "2026-09-05"
 repository: Memorithm/SciRust-Verify
 objective: >-
   Raise ML evidence and verification maturity to 5/5 by making model quality,
@@ -46,10 +46,40 @@ verified_slices:
       - no_hostile_code_isolation_is_established
       - no_model_quality_claim_is_independently_verified_by_this_adapter
       - this_slice_does_not_complete_VML0_VML1_VML2_VML3_or_VML4
+  - id: NNIS_NNML1_exact_byte_parity_binding_v1
+    status: complete
+    pull_request: 33
+    final_exact_head: a120c54ed05b058d9347691d0036eaaaa831df41
+    merge_commit: 593692aea76b90e50899e733344ffa4cf61ba380
+    required_CI: CI_110_success_on_final_exact_head_including_dogfood
+    source_identities:
+      nnis_contract: nnis.nnml1.parity-validation@1.0.0
+      nnis_pull_request: 114
+      nnis_final_exact_head: c74b6b04c45e320c86cdd973b31f49f43c720681
+      nnis_merge_commit: 0ae4b0d4659c8de9b8a8322ed6ab7f8e110b53f2
+      hub_pull_request: 37
+      hub_final_exact_head: 9e95e7d6a141b3f06bfc9effac51007bdfe9b1c2
+      hub_merge_commit: 0e484d9f9903fe0f0fcb7111e0191dfb14d958b4
+    scope: >-
+      SciRust-Verify independently SHA-256 binds the exact original NNIS NNML1
+      parity-evidence bytes to the qualified NNIS validation result, validates
+      the versioned validation envelope and cross-artifact execution commit, and
+      preserves checkpoint specs, parity levels, reference runtimes and execution
+      backends as producer-owned observations. The exact NNIS validation result is
+      retained as a content-addressed dossier attachment. The VERIFIED claim is
+      limited to exact-byte binding and validation-envelope conformance.
+    limits:
+      - NNIS_checkpoint_tokenizer_greedy_logit_same_head_and_promotion_semantics_are_not_reimplemented
+      - no_new_CUDA_model_or_reference_runtime_execution_is_performed
+      - no_model_quality_serving_performance_general_model_family_or_promotion_claim_is_established
+      - no_cross_host_or_hardware_portability_claim_is_established
+      - origin_authentication_of_the_NNIS_validation_result_requires_trusted_Hub_or_execution_provenance
+      - this_slice_is_a_narrow_VML0_style_evidence_envelope_contribution_and_does_not_complete_VML1_VML2_VML3_or_VML4
 priority_program:
   - id: VML0
     name: ML evidence envelope
     priority: P0
+    status: active_with_qualified_NNIS_parity_binding_reference
     goals:
       - define_versioned_model_identity_config_tokenizer_weights_dataset_and_checkpoint_refs
       - distinguish_numerical_quality_performance_memory_energy_determinism_and_correctness_claims
