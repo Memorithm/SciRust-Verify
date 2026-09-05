@@ -14,9 +14,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use scirust_verify_core::adapters::{
-    ingest_nnis_parity, NnisParityIngest, NNIS_PARITY_EVIDENCE_MEDIA_TYPE,
-    NNIS_PARITY_SOURCE_HEAD, NNIS_PARITY_SOURCE_MERGE, NNIS_PARITY_VALIDATION_CONTRACT,
-    NNIS_PARITY_VALIDATION_MEDIA_TYPE,
+    ingest_nnis_parity, NnisParityIngest, NNIS_PARITY_EVIDENCE_MEDIA_TYPE, NNIS_PARITY_SOURCE_HEAD,
+    NNIS_PARITY_SOURCE_MERGE, NNIS_PARITY_VALIDATION_CONTRACT, NNIS_PARITY_VALIDATION_MEDIA_TYPE,
 };
 use scirust_verify_model::provenance::ProvenanceDocument;
 use scirust_verify_model::{
