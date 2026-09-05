@@ -2,8 +2,9 @@
 //!
 //! This binary independently binds the original parity evidence to the qualified
 //! NNIS validation result by SHA-256, preserves NNIS parity facts as source
-//! observations, seals a SciRust-Verify dossier, and exports it as one tar.
-//! It does not rerun models or reinterpret NNIS promotion semantics.
+//! observations, seals the validation result as a content-addressed attachment,
+//! and exports the dossier as one tar. It does not rerun models or reinterpret
+//! NNIS promotion semantics.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -19,8 +20,8 @@ use scirust_verify_core::adapters::{
 };
 use scirust_verify_model::provenance::ProvenanceDocument;
 use scirust_verify_model::{
-    canonical_json, Artifact, ArtifactId, ArtifactKind, Check, CheckAction, CheckExecution,
-    CheckId, CheckStatus, Claim, ClaimEvaluation, ClaimId, ClaimKind, DirtyState,
+    canonical_json, Artifact, ArtifactId, ArtifactKind, Attachment, Check, CheckAction,
+    CheckExecution, CheckId, CheckStatus, Claim, ClaimEvaluation, ClaimId, ClaimKind, DirtyState,
     EnvironmentSnapshot, Evidence, EvidenceId, EvidenceKind, EvidenceStatus, RequirementLevel,
     SourceIdentity, VerificationScope, SCHEMA_VERSION, TOOL_IDENTITY,
 };
@@ -28,6 +29,7 @@ use scirust_verify_store::{RunState, RunsRoot};
 
 const DOSSIER_MEDIA_TYPE: &str = "application/vnd.scirust-verify.dossier.v1+tar";
 const DOSSIER_CONTRACT: &str = "scirust-verify.nnis-parity-dossier@1.0.0";
+const VALIDATION_ATTACHMENT: &str = "evidence/files/nnis-parity-validation.json";
 const MAX_DOSSIER_BYTES: u64 = 512 * 1024 * 1024;
 const TAR_BLOCK: usize = 512;
 
@@ -117,6 +119,13 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
 
     let ingested = ingest_nnis_parity(&cli.parity_evidence, &cli.validation)
         .map_err(|error| ProcessError::Contract(error.to_string()))?;
+    let validation_bytes = fs::read(&cli.validation).map_err(ProcessError::internal)?;
+    let validation_digest = scirust_verify_model::Digest::sha256_hex(&validation_bytes);
+    if validation_digest != *ingested.validation_digest() {
+        return Err(ProcessError::Contract(
+            "NNIS validation artifact changed after contract validation".to_owned(),
+        ));
+    }
 
     let work_root = output_parent.join(format!(
         ".scirust-verify-nnis-parity-{}",
@@ -136,7 +145,6 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
     let run_id = store.run_id().to_string();
 
     let parity_artifact_id = ArtifactId::new("nnis-parity-evidence");
-    let validation_artifact_id = ArtifactId::new("nnis-parity-validation");
     let claim_id = ClaimId::from("nnis_parity_evidence_binding_contract");
     let check_id = CheckId::new("nnis:parity-evidence-binding-v1");
 
@@ -205,13 +213,23 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
             .as_bytes(),
     );
 
-    write_source_artifacts(
-        &store,
-        &cli,
-        &ingested,
-        &parity_artifact_id,
-        &validation_artifact_id,
-    )?;
+    store
+        .write_artifact(&Artifact {
+            id: parity_artifact_id.clone(),
+            kind: ArtifactKind::Other,
+            name: "NNIS NNML1 parity evidence".to_owned(),
+            version: Some("1.0.0".to_owned()),
+            path: cli.parity_evidence.clone(),
+            source: SourceIdentity {
+                repository: Some("https://github.com/Memorithm/NNIS".to_owned()),
+                commit: Some(ingested.execution_git_commit().to_owned()),
+                branch: None,
+                dirty: DirtyState::Unknown,
+                tree_digest: None,
+            },
+            content_digest: Some(ingested.evidence_digest().clone()),
+        })
+        .map_err(ProcessError::internal)?;
     store
         .write_environment(&EnvironmentSnapshot::default())
         .map_err(ProcessError::internal)?;
@@ -242,6 +260,12 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
         scirust_verify_model::ObservedValue::Json(serde_json::json!(limitations)),
     ));
 
+    let validation_attachment = Attachment {
+        path: VALIDATION_ATTACHMENT.to_owned(),
+        size_bytes: validation_bytes.len() as u64,
+        digest: ingested.validation_digest().clone(),
+        media_type: Some(NNIS_PARITY_VALIDATION_MEDIA_TYPE.to_owned()),
+    };
     let evidence = Evidence::builder(
         evidence_id.clone(),
         EvidenceKind::ExternalAttestation,
@@ -255,6 +279,8 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
     .status(EvidenceStatus::Ok)
     .observations(observations)
     .input(ingested.evidence_digest().clone())
+    .input(ingested.validation_digest().clone())
+    .attachment(validation_attachment)
     .meta("contract", DOSSIER_CONTRACT)
     .meta("nnis_source_contract", NNIS_PARITY_VALIDATION_CONTRACT)
     .meta("nnis_source_head", NNIS_PARITY_SOURCE_HEAD)
@@ -269,8 +295,10 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
     .meta("general_model_family_support_verified", false)
     .meta("promotion_authorized", false)
     .build();
+    let mut attachments = BTreeMap::new();
+    attachments.insert(VALIDATION_ATTACHMENT.to_owned(), validation_bytes);
     store
-        .add_evidence(&evidence, &BTreeMap::new())
+        .add_evidence(&evidence, &attachments)
         .map_err(ProcessError::internal)?;
 
     store
@@ -295,7 +323,7 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
             execution_mode: Some("external-artifact-ingestion".to_owned()),
             ..Default::default()
         },
-        reasoning: "The adapter independently hashed the exact original parity-evidence bytes, required the qualified NNIS validation result to reference that same SHA-256 and evidence kind, checked the validation contract/media/version/scope, matched the NNIS execution commit across both artifacts, and rejected promotion/serving/general-family claim inflation. NNIS remains authoritative for checkpoint, tokenizer, greedy-trajectory, logit-tolerance, and same-head parity semantics."
+        reasoning: "The adapter independently hashed the exact original parity-evidence bytes, required the qualified NNIS validation result to reference that same SHA-256 and evidence kind, checked the validation contract/media/version/scope, matched the NNIS execution commit across both artifacts, sealed the exact validation result as a dossier attachment, and rejected promotion/serving/general-family claim inflation. NNIS remains authoritative for checkpoint, tokenizer, greedy-trajectory, logit-tolerance, and same-head parity semantics."
             .to_owned(),
         evidence_ids: vec![evidence_id],
         check_ids: vec![check_id],
@@ -348,49 +376,6 @@ fn run(cli: Cli) -> Result<ProcessSummary, ProcessError> {
         checkpoint_count,
         output: cli.output.display().to_string(),
     })
-}
-
-fn write_source_artifacts(
-    store: &scirust_verify_store::RunStore,
-    cli: &Cli,
-    ingested: &NnisParityIngest,
-    parity_artifact_id: &ArtifactId,
-    validation_artifact_id: &ArtifactId,
-) -> Result<(), ProcessError> {
-    store
-        .write_artifact(&Artifact {
-            id: parity_artifact_id.clone(),
-            kind: ArtifactKind::Other,
-            name: "NNIS NNML1 parity evidence".to_owned(),
-            version: Some("1.0.0".to_owned()),
-            path: cli.parity_evidence.clone(),
-            source: SourceIdentity {
-                repository: Some("https://github.com/Memorithm/NNIS".to_owned()),
-                commit: Some(ingested.execution_git_commit().to_owned()),
-                branch: None,
-                dirty: DirtyState::Unknown,
-                tree_digest: None,
-            },
-            content_digest: Some(ingested.evidence_digest().clone()),
-        })
-        .map_err(ProcessError::internal)?;
-    store
-        .write_artifact(&Artifact {
-            id: validation_artifact_id.clone(),
-            kind: ArtifactKind::Other,
-            name: "NNIS NNML1 parity validation result".to_owned(),
-            version: Some("1.0.0".to_owned()),
-            path: cli.validation.clone(),
-            source: SourceIdentity {
-                repository: Some("https://github.com/Memorithm/NNIS".to_owned()),
-                commit: Some(NNIS_PARITY_SOURCE_MERGE.to_owned()),
-                branch: None,
-                dirty: DirtyState::Unknown,
-                tree_digest: None,
-            },
-            content_digest: Some(ingested.validation_digest().clone()),
-        })
-        .map_err(ProcessError::internal)
 }
 
 struct CleanupDir(PathBuf);
