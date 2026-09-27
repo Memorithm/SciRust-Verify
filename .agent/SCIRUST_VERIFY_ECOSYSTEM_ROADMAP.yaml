@@ -322,3 +322,22 @@ agent_operating_protocol:
     If this roadmap cannot be read, do not make major evidence-schema, verdict,
     trust, execution-boundary, cross-repository, or merge decisions. Read-only
     diagnosis is allowed.
+
+
+ax_task_evidence_verification_program:
+  source_review_date: "2026-09-27"
+  external_reference: google_ax_architecture_only
+  role: task_evidence_verification_consumer
+  objective: >-
+    Consume immutable task artifacts and execution provenance as verification
+    inputs without treating successful execution, sandbox admission or task
+    telemetry as a proof/verdict by themselves.
+  phases:
+    - AXV1_define_task_provenance_ingestion_envelope
+    - AXV2_verify_workspace_artifact_and_backend_identity_links
+    - AXV3_preserve_verdict_scope_independently_of_task_lifecycle_state
+    - AXV4_retain_backend_enforcement_evidence_when_isolation_is_part_of_a_claim
+  invariants:
+    - task_success_never_upgrades_a_verdict
+    - provenance_integrity_is_not_domain_truth
+    - unknown_or_unverifiable_backend_claims_fail_closed
