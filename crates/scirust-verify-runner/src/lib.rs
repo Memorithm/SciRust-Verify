@@ -564,7 +564,8 @@ fn terminate_and_confirm(
     loop {
         match killpg(process_group, Option::<Signal>::None) {
             Err(Errno::ESRCH) => return Ok(()),
-            Ok(()) => {
+            Ok(()) =>
+            {
                 #[cfg(target_os = "linux")]
                 if !linux_process_group_has_live_members(process_group.as_raw())? {
                     return Ok(());
@@ -587,22 +588,16 @@ fn terminate_and_confirm(
 
 #[cfg(target_os = "linux")]
 fn linux_process_group_has_live_members(process_group: i32) -> Result<bool, RunnerError> {
-    let entries = std::fs::read_dir("/proc").map_err(|error| {
-        RunnerError::ProcessGroupTermination {
+    let entries =
+        std::fs::read_dir("/proc").map_err(|error| RunnerError::ProcessGroupTermination {
             reason: format!("cannot inspect Linux process table: {error}"),
-        }
-    })?;
+        })?;
 
     for entry in entries {
         let entry = entry.map_err(|error| RunnerError::ProcessGroupTermination {
             reason: format!("cannot inspect Linux process entry: {error}"),
         })?;
-        if entry
-            .file_name()
-            .to_string_lossy()
-            .parse::<u32>()
-            .is_err()
-        {
+        if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
             continue;
         }
 
@@ -616,22 +611,22 @@ fn linux_process_group_has_live_members(process_group: i32) -> Result<bool, Runn
                 });
             }
         };
-        let (_, fields) = stat.rsplit_once(") ").ok_or_else(|| {
-            RunnerError::ProcessGroupTermination {
-                reason: format!("invalid Linux process stat record: {}", stat_path.display()),
-            }
-        })?;
+        let (_, fields) =
+            stat.rsplit_once(") ")
+                .ok_or_else(|| RunnerError::ProcessGroupTermination {
+                    reason: format!("invalid Linux process stat record: {}", stat_path.display()),
+                })?;
         let mut fields = fields.split_whitespace();
-        let state = fields.next().ok_or_else(|| {
-            RunnerError::ProcessGroupTermination {
+        let state = fields
+            .next()
+            .ok_or_else(|| RunnerError::ProcessGroupTermination {
                 reason: format!("missing process state in {}", stat_path.display()),
-            }
-        })?;
-        let _parent = fields.next().ok_or_else(|| {
-            RunnerError::ProcessGroupTermination {
+            })?;
+        let _parent = fields
+            .next()
+            .ok_or_else(|| RunnerError::ProcessGroupTermination {
                 reason: format!("missing parent pid in {}", stat_path.display()),
-            }
-        })?;
+            })?;
         let member_group = fields
             .next()
             .ok_or_else(|| RunnerError::ProcessGroupTermination {
