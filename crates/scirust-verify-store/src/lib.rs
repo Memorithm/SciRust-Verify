@@ -33,8 +33,6 @@ use std::path::{Component, Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
-#[cfg(unix)]
-use std::os::unix::fs::DirBuilderExt as _;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 
@@ -59,39 +57,45 @@ struct ReadBudget {
     bytes: u64,
 }
 
-struct SnapshotDir(PathBuf);
-
-impl SnapshotDir {
-    fn create(run_id: &str) -> Result<Self, StoreError> {
-        let entropy = format!(
-            "{}|{}|{}|{:p}",
-            chrono_now(),
-            std::process::id(),
-            run_id,
-            &run_id
-        );
-        let name = format!(
-            "scirust-verify-finalize-{}",
-            Digest::sha256_hex(entropy.as_bytes()).value
-        );
-        let path = std::env::temp_dir().join(name);
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        builder.mode(0o700);
-        builder
-            .create(&path)
-            .map_err(|error| io_err(&path, error))?;
-        Ok(Self(path))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
+#[derive(Default)]
+struct SemanticSnapshot {
+    run: Option<RunDocument>,
+    artifact: Option<Artifact>,
+    plan: Option<PlanDocument>,
+    claims: Option<ClaimsDocument>,
+    executions: Option<ExecutionsDocument>,
+    evidence: Vec<Evidence>,
+    file_sizes: BTreeMap<String, u64>,
+    evidence_dir_present: bool,
 }
 
-impl Drop for SnapshotDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+impl SemanticSnapshot {
+    fn capture_directory(&mut self, relative: &Path) {
+        if relative == Path::new("evidence") {
+            self.evidence_dir_present = true;
+        }
+    }
+
+    fn capture_file(
+        &mut self,
+        root: &Path,
+        rel: &str,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        self.file_sizes.insert(rel.to_owned(), bytes.len() as u64);
+        let path = root.join(rel);
+        match rel {
+            "run.json" => self.run = Some(deserialize_snapshot(&path, bytes)?),
+            "artifact.json" => self.artifact = Some(deserialize_snapshot(&path, bytes)?),
+            "plan.json" => self.plan = Some(deserialize_snapshot(&path, bytes)?),
+            "claims.json" => self.claims = Some(deserialize_snapshot(&path, bytes)?),
+            "executions.json" => self.executions = Some(deserialize_snapshot(&path, bytes)?),
+            _ if Path::new(rel).parent() == Some(Path::new("evidence")) => {
+                self.evidence.push(deserialize_snapshot(&path, bytes)?);
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 
@@ -678,41 +682,75 @@ impl RunStore {
             return Err(StoreError::Frozen(self.run_id.clone()));
         }
 
-        // Copy the exact bytes read through confined descriptors into a
-        // private snapshot. Semantic validation uses only this immutable
-        // capture; the live tree must still match it before sealing.
-        let snapshot_dir = SnapshotDir::create(self.run_id.as_str())?;
+        // Parse semantic documents directly from the exact bytes read through
+        // confined descriptors. No path-addressable snapshot is created for a
+        // same-UID child process to mutate. The live tree must still match the
+        // captured digest map before sealing.
         let mut validation_snapshot = BTreeMap::new();
         let mut validation_snapshot_budget = ReadBudget::default();
+        let mut semantic_snapshot = SemanticSnapshot::default();
         self.collect_files(
             &self.run_dir,
             0,
             &mut validation_snapshot_budget,
             &mut validation_snapshot,
-            Some(snapshot_dir.path()),
+            Some(&mut semantic_snapshot),
         )?;
-        let validation_store = RunStore {
-            run_dir: snapshot_dir.path().to_path_buf(),
-            run_id: self.run_id.clone(),
-        };
-        let run_doc = validation_store.read_run_document()?;
+        let run_doc = semantic_snapshot.run.ok_or_else(|| {
+            StoreError::corrupt(self.run_id.as_str(), "required file `run.json` is missing")
+        })?;
         if run_doc.state == RunState::Finalized {
             return Err(StoreError::Frozen(self.run_id.clone()));
         }
         if run_doc.schema_version > SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema {
-                path: validation_store.run_dir.join("run.json"),
+                path: self.run_dir.join("run.json"),
                 found: run_doc.schema_version,
                 max: SCHEMA_VERSION,
             });
         }
 
         // Required documents.
-        let _artifact = validation_store.read_artifact()?;
-        let plan = validation_store.read_plan()?;
-        let claims = validation_store.read_claims()?;
-        let executions = validation_store.read_executions()?;
-        let evidence = validation_store.read_all_evidence()?;
+        let _artifact = semantic_snapshot.artifact.ok_or_else(|| {
+            StoreError::corrupt(
+                self.run_id.as_str(),
+                "required file `artifact.json` is missing",
+            )
+        })?;
+        let plan = semantic_snapshot.plan.ok_or_else(|| {
+            StoreError::corrupt(self.run_id.as_str(), "required file `plan.json` is missing")
+        })?;
+        let claims = semantic_snapshot.claims.ok_or_else(|| {
+            StoreError::corrupt(self.run_id.as_str(), "required file `claims.json` is missing")
+        })?;
+        if !semantic_snapshot.evidence_dir_present {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                "required directory `evidence` is missing",
+            ));
+        }
+        let executions = semantic_snapshot
+            .executions
+            .map(|document| document.executions)
+            .unwrap_or_default();
+        let mut evidence = semantic_snapshot.evidence;
+        evidence.sort_by(|a, b| a.id.cmp(&b.id));
+        let claims = claims.claims;
+
+        let actual_plan_digest =
+            Digest::of_canonical_json(&plan.checks).map_err(|source| StoreError::Serde {
+                path: self.run_dir.join("plan.json"),
+                source,
+            })?;
+        if actual_plan_digest != plan.plan_digest {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!(
+                    "plan digest mismatch: recorded {}, computed {}",
+                    plan.plan_digest, actual_plan_digest
+                ),
+            ));
+        }
 
         // Uniqueness of evidence ids.
         let mut seen_ids = std::collections::BTreeSet::new();
@@ -727,7 +765,6 @@ impl RunStore {
 
         // Attachment existence + integrity.
         let mut validated_attachments: BTreeMap<String, (u64, String)> = BTreeMap::new();
-        let mut attachment_budget = ReadBudget::default();
         for ev in &evidence {
             for att in &ev.attachments {
                 let rel = sanitize_attachment_path(&att.path)?;
@@ -741,22 +778,25 @@ impl RunStore {
                     }
                     continue;
                 }
-                let bytes = validation_store
-                    .read_bounded_regular(&rel, &mut attachment_budget)
-                    .map_err(|_| {
-                        StoreError::corrupt(
-                            self.run_id.as_str(),
-                            format!("referenced attachment `{}` is missing", att.path),
-                        )
-                    })?;
-                if bytes.len() as u64 != att.size_bytes {
+                let actual_size = semantic_snapshot.file_sizes.get(&rel).ok_or_else(|| {
+                    StoreError::corrupt(
+                        self.run_id.as_str(),
+                        format!("referenced attachment `{}` is missing", att.path),
+                    )
+                })?;
+                if *actual_size != att.size_bytes {
                     return Err(StoreError::corrupt(
                         self.run_id.as_str(),
                         format!("attachment `{}` size drifted", att.path),
                     ));
                 }
-                let digest = Digest::sha256_hex(&bytes);
-                if digest != att.digest {
+                let actual_digest = validation_snapshot.get(&rel).ok_or_else(|| {
+                    StoreError::corrupt(
+                        self.run_id.as_str(),
+                        format!("referenced attachment `{}` is missing", att.path),
+                    )
+                })?;
+                if actual_digest != &att.digest.value {
                     return Err(StoreError::corrupt(
                         self.run_id.as_str(),
                         format!("attachment `{}` digest mismatch", att.path),
@@ -1098,7 +1138,7 @@ impl RunStore {
         depth: usize,
         budget: &mut ReadBudget,
         out: &mut BTreeMap<String, String>,
-        snapshot_root: Option<&Path>,
+        mut semantic_snapshot: Option<&mut SemanticSnapshot>,
     ) -> Result<(), StoreError> {
         if depth > MAX_BUNDLE_DEPTH {
             return Err(StoreError::corrupt(
@@ -1128,12 +1168,16 @@ impl RunStore {
                         format!("bundle path `{}` is not valid UTF-8", relative.display()),
                     )
                 })?;
-                if let Some(root) = snapshot_root {
-                    let snapshot_path = root.join(relative);
-                    fs::create_dir(&snapshot_path)
-                        .map_err(|error| io_err(&snapshot_path, error))?;
+                if let Some(snapshot) = semantic_snapshot.as_deref_mut() {
+                    snapshot.capture_directory(relative);
                 }
-                self.collect_files(&path, depth + 1, budget, out, snapshot_root)?;
+                self.collect_files(
+                    &path,
+                    depth + 1,
+                    budget,
+                    out,
+                    semantic_snapshot.as_deref_mut(),
+                )?;
             } else if file_type.is_file() {
                 let relative = path.strip_prefix(&self.run_dir).map_err(|_| {
                     StoreError::corrupt(self.run_id.as_str(), "bundle path escaped run")
@@ -1151,10 +1195,8 @@ impl RunStore {
                     continue;
                 }
                 let bytes = self.read_bounded_regular(&rel, budget)?;
-                if let Some(root) = snapshot_root {
-                    let snapshot_path = root.join(relative);
-                    atomic_write(&snapshot_path, &bytes)
-                        .map_err(|error| io_err(&snapshot_path, error))?;
+                if let Some(snapshot) = semantic_snapshot.as_deref_mut() {
+                    snapshot.capture_file(&self.run_dir, &rel, &bytes)?;
                 }
                 out.insert(rel, Digest::sha256_hex(&bytes).value);
             } else {
@@ -1321,6 +1363,16 @@ fn serialize_json_document<T: Serialize>(path: &Path, value: &T) -> Result<Vec<u
     })?;
     bytes.extend_from_slice(b"\n");
     Ok(bytes)
+}
+
+fn deserialize_snapshot<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<T, StoreError> {
+    serde_json::from_slice(bytes).map_err(|source| StoreError::Serde {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn chrono_now() -> String {
