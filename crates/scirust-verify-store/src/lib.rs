@@ -35,6 +35,8 @@ use std::path::{Component, Path, PathBuf};
 use std::os::fd::AsRawFd as _;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+#[cfg(unix)]
+use std::os::unix::fs::DirBuilderExt as _;
 
 use scirust_verify_model::check::{Check, CheckExecution};
 use scirust_verify_model::claim::Claim;
@@ -55,6 +57,42 @@ const MAX_BUNDLE_DEPTH: usize = 64;
 struct ReadBudget {
     files: usize,
     bytes: u64,
+}
+
+struct SnapshotDir(PathBuf);
+
+impl SnapshotDir {
+    fn create(run_id: &str) -> Result<Self, StoreError> {
+        let entropy = format!(
+            "{}|{}|{}|{:p}",
+            chrono_now(),
+            std::process::id(),
+            run_id,
+            &run_id
+        );
+        let name = format!(
+            "scirust-verify-finalize-{}",
+            Digest::sha256_hex(entropy.as_bytes()).value
+        );
+        let path = std::env::temp_dir().join(name);
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(0o700);
+        builder
+            .create(&path)
+            .map_err(|error| io_err(&path, error))?;
+        Ok(Self(path))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for SnapshotDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 impl ReadBudget {
@@ -635,22 +673,15 @@ impl RunStore {
     /// * required documents exist (artifact, plan, claims);
     /// * no impossible lifecycle transition remains pending.
     pub fn finalize(&self) -> Result<BundleManifest, StoreError> {
-        let run_doc = self.read_run_document()?;
-        if run_doc.schema_version > SCHEMA_VERSION {
-            return Err(StoreError::UnsupportedSchema {
-                path: self.run_dir.join("run.json"),
-                found: run_doc.schema_version,
-                max: SCHEMA_VERSION,
-            });
-        }
-        if run_doc.state == RunState::Finalized {
+        let current_doc = self.read_run_document()?;
+        if current_doc.state == RunState::Finalized {
             return Err(StoreError::Frozen(self.run_id.clone()));
         }
 
-        // Capture the exact tree before semantic validation. A second
-        // bounded snapshot below must match byte-for-byte, preventing a
-        // concurrently mutated version from being sealed after another
-        // version supplied the validated semantics.
+        // Copy the exact bytes read through confined descriptors into a
+        // private snapshot. Semantic validation uses only this immutable
+        // capture; the live tree must still match it before sealing.
+        let snapshot_dir = SnapshotDir::create(self.run_id.as_str())?;
         let mut validation_snapshot = BTreeMap::new();
         let mut validation_snapshot_budget = ReadBudget::default();
         self.collect_files(
@@ -658,14 +689,30 @@ impl RunStore {
             0,
             &mut validation_snapshot_budget,
             &mut validation_snapshot,
+            Some(snapshot_dir.path()),
         )?;
+        let validation_store = RunStore {
+            run_dir: snapshot_dir.path().to_path_buf(),
+            run_id: self.run_id.clone(),
+        };
+        let run_doc = validation_store.read_run_document()?;
+        if run_doc.state == RunState::Finalized {
+            return Err(StoreError::Frozen(self.run_id.clone()));
+        }
+        if run_doc.schema_version > SCHEMA_VERSION {
+            return Err(StoreError::UnsupportedSchema {
+                path: validation_store.run_dir.join("run.json"),
+                found: run_doc.schema_version,
+                max: SCHEMA_VERSION,
+            });
+        }
 
         // Required documents.
-        let _artifact = self.read_artifact()?;
-        let plan = self.read_plan()?;
-        let claims = self.read_claims()?;
-        let executions = self.read_executions()?;
-        let evidence = self.read_all_evidence()?;
+        let _artifact = validation_store.read_artifact()?;
+        let plan = validation_store.read_plan()?;
+        let claims = validation_store.read_claims()?;
+        let executions = validation_store.read_executions()?;
+        let evidence = validation_store.read_all_evidence()?;
 
         // Uniqueness of evidence ids.
         let mut seen_ids = std::collections::BTreeSet::new();
@@ -694,7 +741,7 @@ impl RunStore {
                     }
                     continue;
                 }
-                let bytes = self
+                let bytes = validation_store
                     .read_bounded_regular(&rel, &mut attachment_budget)
                     .map_err(|_| {
                         StoreError::corrupt(
@@ -774,7 +821,7 @@ impl RunStore {
         // replace that one digest after the transition.
         let mut files = BTreeMap::new();
         let mut budget = ReadBudget::default();
-        self.collect_files(&self.run_dir, 0, &mut budget, &mut files)?;
+        self.collect_files(&self.run_dir, 0, &mut budget, &mut files, None)?;
         if files != validation_snapshot {
             return Err(StoreError::corrupt(
                 self.run_id.as_str(),
@@ -852,15 +899,19 @@ impl RunStore {
         // Every non-manifest file must be sealed too (detect additions).
         let mut present = BTreeMap::new();
         let mut present_budget = ReadBudget::default();
-        self.collect_files(&self.run_dir, 0, &mut present_budget, &mut present)?;
+        self.collect_files(
+            &self.run_dir,
+            0,
+            &mut present_budget,
+            &mut present,
+            None,
+        )?;
         present.remove("bundle.json");
-        for rel in present.keys() {
-            if !manifest.files.contains_key(rel) {
-                return Err(StoreError::corrupt(
-                    self.run_id.as_str(),
-                    format!("unsealed file `{rel}` present in finalized bundle"),
-                ));
-            }
+        if present != manifest.files {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                "bundle changed during integrity verification",
+            ));
         }
         Ok(manifest.files.len())
     }
@@ -1053,6 +1104,7 @@ impl RunStore {
         depth: usize,
         budget: &mut ReadBudget,
         out: &mut BTreeMap<String, String>,
+        snapshot_root: Option<&Path>,
     ) -> Result<(), StoreError> {
         if depth > MAX_BUNDLE_DEPTH {
             return Err(StoreError::corrupt(
@@ -1073,7 +1125,21 @@ impl RunStore {
             }
             if file_type.is_dir() {
                 budget.account_entry(self.run_id.as_str())?;
-                self.collect_files(&path, depth + 1, budget, out)?;
+                let relative = path.strip_prefix(&self.run_dir).map_err(|_| {
+                    StoreError::corrupt(self.run_id.as_str(), "bundle path escaped run")
+                })?;
+                relative.to_str().ok_or_else(|| {
+                    StoreError::corrupt(
+                        self.run_id.as_str(),
+                        format!("bundle path `{}` is not valid UTF-8", relative.display()),
+                    )
+                })?;
+                if let Some(root) = snapshot_root {
+                    let snapshot_path = root.join(relative);
+                    fs::create_dir(&snapshot_path)
+                        .map_err(|error| io_err(&snapshot_path, error))?;
+                }
+                self.collect_files(&path, depth + 1, budget, out, snapshot_root)?;
             } else if file_type.is_file() {
                 let relative = path.strip_prefix(&self.run_dir).map_err(|_| {
                     StoreError::corrupt(self.run_id.as_str(), "bundle path escaped run")
@@ -1091,6 +1157,11 @@ impl RunStore {
                     continue;
                 }
                 let bytes = self.read_bounded_regular(&rel, budget)?;
+                if let Some(root) = snapshot_root {
+                    let snapshot_path = root.join(relative);
+                    atomic_write(&snapshot_path, &bytes)
+                        .map_err(|error| io_err(&snapshot_path, error))?;
+                }
                 out.insert(rel, Digest::sha256_hex(&bytes).value);
             } else {
                 return Err(StoreError::corrupt(
