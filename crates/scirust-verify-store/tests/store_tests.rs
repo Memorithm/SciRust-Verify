@@ -261,10 +261,7 @@ fn execution_referencing_missing_evidence_fails_finalize() {
         })
         .unwrap();
     assert!(matches!(store.finalize(), Err(StoreError::Corrupt { .. })));
-    assert_eq!(
-        store.read_run_document().unwrap().state,
-        RunState::Planning
-    );
+    assert_eq!(store.read_run_document().unwrap().state, RunState::Planning);
 }
 
 #[cfg(unix)]
@@ -288,10 +285,7 @@ fn finalization_rejects_non_utf8_bundle_paths_without_freezing() {
     std::fs::write(store.path().join(invalid_name), b"unrepresentable").unwrap();
 
     assert!(matches!(store.finalize(), Err(StoreError::Corrupt { .. })));
-    assert_eq!(
-        store.read_run_document().unwrap().state,
-        RunState::Planning
-    );
+    assert_eq!(store.read_run_document().unwrap().state, RunState::Planning);
 }
 
 #[test]
@@ -437,6 +431,7 @@ fn finalization_rejects_symlink_cycles() {
     symlink("../cycle", store.path().join("cycle/again")).unwrap();
 
     assert!(matches!(store.finalize(), Err(StoreError::Corrupt { .. })));
+    assert_eq!(store.read_run_document().unwrap().state, RunState::Planning);
 }
 
 #[cfg(unix)]
