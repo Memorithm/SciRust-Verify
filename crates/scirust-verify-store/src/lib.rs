@@ -33,10 +33,10 @@ use std::path::{Component, Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
-#[cfg(target_os = "linux")]
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt as _;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 
 use scirust_verify_model::check::{Check, CheckExecution};
 use scirust_verify_model::claim::Claim;
@@ -899,13 +899,7 @@ impl RunStore {
         // Every non-manifest file must be sealed too (detect additions).
         let mut present = BTreeMap::new();
         let mut present_budget = ReadBudget::default();
-        self.collect_files(
-            &self.run_dir,
-            0,
-            &mut present_budget,
-            &mut present,
-            None,
-        )?;
+        self.collect_files(&self.run_dir, 0, &mut present_budget, &mut present, None)?;
         present.remove("bundle.json");
         if present != manifest.files {
             return Err(StoreError::corrupt(
