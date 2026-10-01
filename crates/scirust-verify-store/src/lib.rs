@@ -923,7 +923,8 @@ impl RunStore {
         let original_run = serialize_json_document(&run_path, &run_doc)?;
         let finalized_run = serialize_json_document(&run_path, &finalized_doc)?;
         if let Err(error) = atomic_write(&run_path, &finalized_run) {
-            atomic_write(&run_path, &original_run).map_err(|rollback| io_err(&run_path, rollback))?;
+            atomic_write(&run_path, &original_run)
+                .map_err(|rollback| io_err(&run_path, rollback))?;
             return Err(io_err(&run_path, error));
         }
         files.insert(
@@ -940,7 +941,8 @@ impl RunStore {
         let manifest_bytes = serialize_json_document(&manifest_path, &manifest)?;
         if let Err(error) = atomic_write(&manifest_path, &manifest_bytes) {
             let _ = fs::remove_file(&manifest_path);
-            atomic_write(&run_path, &original_run).map_err(|rollback| io_err(&run_path, rollback))?;
+            atomic_write(&run_path, &original_run)
+                .map_err(|rollback| io_err(&run_path, rollback))?;
             return Err(io_err(&manifest_path, error));
         }
         Ok(manifest)
