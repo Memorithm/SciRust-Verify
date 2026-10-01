@@ -65,6 +65,21 @@ child and records the distinct `TimedOut` state. Tested.
 every store write/read path. Content-addressed attachment storage avoids
 attacker-controlled filenames for payloads.
 
+Bundle ingestion additionally validates the exact run-id shape and every
+manifest key, rejects symlinks and special files, bounds file count, total
+bytes, per-file bytes and directory depth, and uses a no-follow descriptor
+open plus identity check on Linux. Other targets retain component and file-type
+checks but do not claim the Linux descriptor-level race protection.
+
+### Malicious bundle size or shape
+
+*Threat:* a dossier exhausts memory, file descriptors or traversal time with
+oversized files, excessive entries or deep directory trees.
+
+*Mitigation (implemented):* readers enforce checked limits of 16,384 files,
+4 GiB total, 1 GiB per regular file and 64 path components. Limit violations
+fail closed as corruption before the dossier can be accepted.
+
 ### Symlink escape in source-tree hashing
 
 *Threat:* symlinks smuggle external content into (or out of) source identity.
