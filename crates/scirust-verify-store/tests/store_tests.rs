@@ -405,10 +405,7 @@ fn finalization_rejects_symlink_cycles() {
     std::fs::create_dir(store.path().join("cycle")).unwrap();
     symlink("../cycle", store.path().join("cycle/again")).unwrap();
 
-    assert!(matches!(
-        store.finalize(),
-        Err(StoreError::Corrupt { .. })
-    ));
+    assert!(matches!(store.finalize(), Err(StoreError::Corrupt { .. })));
 }
 
 #[cfg(unix)]
