@@ -123,9 +123,11 @@ directory and pins each descendant directory descriptor; every component and
 the final file are opened with `O_NOFOLLOW`, with descriptor identity checked
 against pre-open metadata before any bytes are accepted.
 
-One traversal is limited to 16,384 files, 4 GiB total bytes, 1 GiB per file
-and 64 path components. Counter arithmetic is checked. Crossing any limit is
-reported as bundle corruption; readers never continue with a partial dossier.
+One traversal is limited to 16,384 filesystem entries (files and directories),
+4 GiB total file bytes, 1 GiB per file and 64 path components. Counter
+arithmetic is checked. Crossing any limit is reported as bundle corruption;
+readers never continue with a partial dossier. Non-UTF-8 names are rejected so
+two different native paths can never collapse to one manifest key.
 
 ## Canonicalization contract
 
