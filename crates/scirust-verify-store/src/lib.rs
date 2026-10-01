@@ -30,6 +30,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
@@ -50,6 +51,7 @@ const MAX_BUNDLE_FILES: usize = 16_384;
 const MAX_BUNDLE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_BUNDLE_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_BUNDLE_DEPTH: usize = 64;
+static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Default)]
 struct ReadBudget {
@@ -1340,20 +1342,37 @@ fn read_opened_file(
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!(
-        "{}tmp-{}",
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| format!("{e}."))
-            .unwrap_or_default(),
-        std::process::id()
-    ));
-    {
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| format!("{value}."))
+        .unwrap_or_default();
+    let (tmp, mut file) = loop {
+        let nonce = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = path.with_extension(format!(
+            "{extension}tmp-{}-{nonce}",
+            std::process::id()
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (candidate, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, path)
+    result
 }
 
 fn serialize_json_document<T: Serialize>(path: &Path, value: &T) -> Result<Vec<u8>, StoreError> {
