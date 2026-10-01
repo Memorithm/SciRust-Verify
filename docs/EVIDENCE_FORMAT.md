@@ -132,7 +132,9 @@ two different native paths can never collapse to one manifest key.
 Finalization takes a bounded digest snapshot before semantic validation and a
 second snapshot immediately before the lifecycle transition. Any difference
 fails closed, so the manifest cannot seal a different stable file version from
-the one present when validation began.
+the one present when validation began. The finalized `run.json` is constructed
+from the already validated run document and its exact serialized bytes are
+hashed; finalization never reloads mutable run metadata after the comparison.
 
 ## Canonicalization contract
 
