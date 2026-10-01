@@ -77,9 +77,10 @@ file-type checks but do not claim the Linux descriptor-level race protection.
 *Threat:* a dossier exhausts memory, file descriptors or traversal time with
 oversized files, excessive entries or deep directory trees.
 
-*Mitigation (implemented):* readers enforce checked limits of 16,384 files,
-4 GiB total, 1 GiB per regular file and 64 path components. Limit violations
-fail closed as corruption before the dossier can be accepted.
+*Mitigation (implemented):* readers enforce checked limits of 16,384 filesystem
+entries, 4 GiB total, 1 GiB per regular file and 64 path components. Repeated
+attachment references are validated once per unique path. Limit violations
+fail closed before the run becomes finalized, and non-UTF-8 paths are rejected.
 
 ### Symlink escape in source-tree hashing
 
