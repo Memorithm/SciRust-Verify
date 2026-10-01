@@ -81,13 +81,15 @@ oversized files, excessive entries or deep directory trees.
 entries, 4 GiB total, 1 GiB per regular file and 64 path components. Repeated
 attachment references are validated once per unique path. Limit violations
 fail closed before the run becomes finalized, and non-UTF-8 paths are rejected.
-Finalization copies the exact bytes read through confined descriptors into a
-private bounded snapshot and validates only that capture. It then compares the
-snapshot's full digest map with a fresh traversal of the live tree, rejecting
-concurrent changes—including swap-and-restore races—instead of sealing a
-different version. Final lifecycle metadata is derived from the captured run
-document rather than reloading a mutable file. Integrity verification also
-compares the complete final digest map with the manifest.
+Finalization parses semantic documents directly from the exact bytes read
+through confined descriptors and retains the resulting objects, attachment
+sizes and digest map in verifier-owned memory; no named snapshot is exposed to
+same-UID child processes. It then compares the captured digest map with a fresh
+traversal of the live tree, rejecting concurrent changes—including
+swap-and-restore races—instead of sealing a different version. Final lifecycle
+metadata is derived from the captured run document rather than reloading a
+mutable file. Integrity verification also compares the complete final digest
+map with the manifest.
 
 ### Symlink escape in source-tree hashing
 
