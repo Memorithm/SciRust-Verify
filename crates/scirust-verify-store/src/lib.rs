@@ -580,11 +580,9 @@ impl RunStore {
                         format!("evidence entry `{}` is not a regular file", path.display()),
                     ));
                 }
-                let relative = path
-                    .strip_prefix(&self.run_dir)
-                    .map_err(|_| {
-                        StoreError::corrupt(self.run_id.as_str(), "evidence path escaped run")
-                    })?;
+                let relative = path.strip_prefix(&self.run_dir).map_err(|_| {
+                    StoreError::corrupt(self.run_id.as_str(), "evidence path escaped run")
+                })?;
                 let rel = relative
                     .to_str()
                     .ok_or_else(|| {
