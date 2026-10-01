@@ -129,15 +129,17 @@ arithmetic is checked. Crossing any limit is reported as bundle corruption;
 readers never continue with a partial dossier. Non-UTF-8 names are rejected so
 two different native paths can never collapse to one manifest key.
 
-Finalization copies the exact bytes read through confined descriptors into a
-private, bounded snapshot and performs semantic validation only against that
-capture. It then takes a second digest snapshot of the live tree immediately
-before the lifecycle transition. Any difference fails closed, including a
-file swapped away and restored during validation. The finalized `run.json` is
-constructed from the captured, validated run document and its exact serialized
-bytes are hashed; finalization never reloads mutable run metadata after the
-comparison. Integrity verification likewise compares the complete digest map
-from its final traversal with the manifest, not only their path sets.
+Finalization parses semantic documents directly from the exact bytes read
+through confined descriptors and retains those parsed objects, attachment
+sizes and full digest map in verifier-owned memory. It creates no named
+snapshot that a same-UID child process could reopen. A second digest snapshot
+of the live tree is taken immediately before the lifecycle transition. Any
+difference fails closed, including a file swapped away and restored during
+validation. The finalized `run.json` is constructed from the captured,
+validated run document and its exact serialized bytes are hashed; finalization
+never reloads mutable run metadata after the comparison. Integrity verification
+likewise compares the complete digest map from its final traversal with the
+manifest, not only their path sets.
 
 ## Canonicalization contract
 
