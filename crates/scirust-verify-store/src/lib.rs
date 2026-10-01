@@ -125,22 +125,22 @@ impl SemanticSnapshot {
         }
     }
 
-    fn capture_file(&mut self, root: &Path, rel: &str, bytes: &[u8]) -> Result<(), StoreError> {
+    fn capture_file(&mut self, root: &Path, rel: &str, bytes: Vec<u8>) -> Result<(), StoreError> {
         self.file_sizes.insert(rel.to_owned(), bytes.len() as u64);
         let path = root.join(rel);
         match rel {
             "run.json" => {
-                self.run = Some(deserialize_snapshot(&path, bytes)?);
-                self.run_bytes = Some(bytes.to_vec());
+                self.run = Some(deserialize_snapshot(&path, &bytes)?);
+                self.run_bytes = Some(bytes);
             }
-            "artifact.json" => self.artifact = Some(deserialize_snapshot(&path, bytes)?),
-            "plan.json" => self.plan = Some(deserialize_snapshot(&path, bytes)?),
-            "claims.json" => self.claims = Some(deserialize_snapshot(&path, bytes)?),
-            "executions.json" => self.executions = Some(deserialize_snapshot(&path, bytes)?),
+            "artifact.json" => self.artifact = Some(deserialize_snapshot(&path, &bytes)?),
+            "plan.json" => self.plan = Some(deserialize_snapshot(&path, &bytes)?),
+            "claims.json" => self.claims = Some(deserialize_snapshot(&path, &bytes)?),
+            "executions.json" => self.executions = Some(deserialize_snapshot(&path, &bytes)?),
             _ if Path::new(rel).parent() == Some(Path::new("evidence"))
                 && Path::new(rel).extension().and_then(|value| value.to_str()) == Some("json") =>
             {
-                self.evidence.push(deserialize_snapshot(&path, bytes)?);
+                self.evidence.push(deserialize_snapshot(&path, &bytes)?);
             }
             _ => {}
         }
@@ -1232,10 +1232,11 @@ impl RunStore {
                     continue;
                 }
                 let bytes = self.read_bounded_regular(&rel, budget)?;
+                let digest = Digest::sha256_hex(&bytes).value;
                 if let Some(snapshot) = semantic_snapshot.as_deref_mut() {
-                    snapshot.capture_file(&self.run_dir, &rel, &bytes)?;
+                    snapshot.capture_file(&self.run_dir, &rel, bytes)?;
                 }
-                out.insert(rel, Digest::sha256_hex(&bytes).value);
+                out.insert(rel, digest);
             } else {
                 return Err(StoreError::corrupt(
                     self.run_id.as_str(),
