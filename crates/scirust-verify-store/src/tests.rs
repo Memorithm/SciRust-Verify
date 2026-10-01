@@ -11,6 +11,15 @@ fn read_budget_rejects_file_count_and_byte_overflow() {
         Err(StoreError::Corrupt { .. })
     ));
 
+    let mut directory_budget = ReadBudget {
+        files: MAX_BUNDLE_FILES,
+        bytes: 0,
+    };
+    assert!(matches!(
+        directory_budget.account_entry("run-test"),
+        Err(StoreError::Corrupt { .. })
+    ));
+
     let mut byte_budget = ReadBudget {
         files: 0,
         bytes: MAX_BUNDLE_BYTES,
