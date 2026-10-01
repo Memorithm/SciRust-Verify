@@ -16,6 +16,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
 
 ### Added
 
+- Run the complete CI workflow on the repository's actual default branch,
+  `feat/scirust-verify-foundation`, in addition to pull requests (MEM-18).
 - Cargo workspace with eleven crates: model, runner, numerics, store, policy,
   core, cargo provider, determinism engine, report rendering, SciRust adapter
   slot and CLI binary `scirust-verify`.
