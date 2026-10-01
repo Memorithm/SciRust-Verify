@@ -108,6 +108,7 @@ struct ReadBudget {
 #[derive(Default)]
 struct SemanticSnapshot {
     run: Option<RunDocument>,
+    run_bytes: Option<Vec<u8>>,
     artifact: Option<Artifact>,
     plan: Option<PlanDocument>,
     claims: Option<ClaimsDocument>,
@@ -128,7 +129,10 @@ impl SemanticSnapshot {
         self.file_sizes.insert(rel.to_owned(), bytes.len() as u64);
         let path = root.join(rel);
         match rel {
-            "run.json" => self.run = Some(deserialize_snapshot(&path, bytes)?),
+            "run.json" => {
+                self.run = Some(deserialize_snapshot(&path, bytes)?);
+                self.run_bytes = Some(bytes.to_vec());
+            }
             "artifact.json" => self.artifact = Some(deserialize_snapshot(&path, bytes)?),
             "plan.json" => self.plan = Some(deserialize_snapshot(&path, bytes)?),
             "claims.json" => self.claims = Some(deserialize_snapshot(&path, bytes)?),
@@ -741,6 +745,9 @@ impl RunStore {
             &mut validation_snapshot,
             Some(&mut semantic_snapshot),
         )?;
+        let original_run = semantic_snapshot.run_bytes.take().ok_or_else(|| {
+            StoreError::corrupt(self.run_id.as_str(), "required file `run.json` is missing")
+        })?;
         let run_doc = semantic_snapshot.run.ok_or_else(|| {
             StoreError::corrupt(self.run_id.as_str(), "required file `run.json` is missing")
         })?;
@@ -920,7 +927,6 @@ impl RunStore {
         finalized_doc.state = RunState::Finalized;
         finalized_doc.finalized_at_utc = Some(chrono_now());
         let run_path = self.run_dir.join("run.json");
-        let original_run = serialize_json_document(&run_path, &run_doc)?;
         let finalized_run = serialize_json_document(&run_path, &finalized_doc)?;
         if let Err(error) = atomic_write(&run_path, &finalized_run) {
             atomic_write(&run_path, &original_run)
