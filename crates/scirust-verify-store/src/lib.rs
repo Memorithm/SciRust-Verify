@@ -860,8 +860,8 @@ impl RunStore {
         rel: &str,
         budget: &mut ReadBudget,
     ) -> Result<Vec<u8>, StoreError> {
-        let root_before = fs::symlink_metadata(&self.run_dir)
-            .map_err(|error| io_err(&self.run_dir, error))?;
+        let root_before =
+            fs::symlink_metadata(&self.run_dir).map_err(|error| io_err(&self.run_dir, error))?;
         if root_before.file_type().is_symlink() || !root_before.is_dir() {
             return Err(StoreError::corrupt(
                 self.run_id.as_str(),
