@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
 
 ## [0.1.0] — foundation (unreleased)
 
+### Security
+
+- Confine evidence-bundle reads to validated run-relative regular files,
+  reject symlinks (including cycles), use no-follow descriptor opens on Linux,
+  and enforce bounded file-count, byte and depth budgets (MEM-17).
+
 ### Added
 
 - Cargo workspace with eleven crates: model, runner, numerics, store, policy,
