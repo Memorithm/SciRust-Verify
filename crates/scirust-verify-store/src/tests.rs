@@ -62,6 +62,34 @@ fn path_policy_rejects_absolute_traversal_and_excessive_depth() {
 }
 
 #[test]
+fn traversal_rejects_a_file_beyond_the_component_depth_limit() {
+    let root = std::env::temp_dir().join(format!(
+        "svs-depth-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    let mut directory = store.path().to_path_buf();
+    for index in 0..MAX_BUNDLE_DEPTH {
+        directory.push(format!("d{index}"));
+    }
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("leaf.bin"), b"leaf").unwrap();
+
+    let mut budget = ReadBudget::default();
+    let mut files = BTreeMap::new();
+    assert!(matches!(
+        store.collect_files(store.path(), 0, &mut budget, &mut files, None),
+        Err(StoreError::Corrupt { reason, .. }) if reason.contains("component-depth")
+    ));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn run_id_policy_rejects_paths_and_malformed_ids() {
     for invalid in [
         "../../outside",
