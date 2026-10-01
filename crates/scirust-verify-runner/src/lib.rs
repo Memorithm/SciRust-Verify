@@ -564,7 +564,12 @@ fn terminate_and_confirm(
     loop {
         match killpg(process_group, Option::<Signal>::None) {
             Err(Errno::ESRCH) => return Ok(()),
-            Ok(()) => {}
+            Ok(()) => {
+                #[cfg(target_os = "linux")]
+                if !linux_process_group_has_live_members(process_group.as_raw())? {
+                    return Ok(());
+                }
+            }
             Err(error) => {
                 return Err(RunnerError::ProcessGroupTermination {
                     reason: format!("termination probe failed: {error}"),
@@ -578,6 +583,71 @@ fn terminate_and_confirm(
         }
         thread::sleep(PROCESS_GROUP_POLL_INTERVAL);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_group_has_live_members(process_group: i32) -> Result<bool, RunnerError> {
+    let entries = std::fs::read_dir("/proc").map_err(|error| {
+        RunnerError::ProcessGroupTermination {
+            reason: format!("cannot inspect Linux process table: {error}"),
+        }
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|error| RunnerError::ProcessGroupTermination {
+            reason: format!("cannot inspect Linux process entry: {error}"),
+        })?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .parse::<u32>()
+            .is_err()
+        {
+            continue;
+        }
+
+        let stat_path = entry.path().join("stat");
+        let stat = match std::fs::read_to_string(&stat_path) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(RunnerError::ProcessGroupTermination {
+                    reason: format!("cannot inspect {}: {error}", stat_path.display()),
+                });
+            }
+        };
+        let (_, fields) = stat.rsplit_once(") ").ok_or_else(|| {
+            RunnerError::ProcessGroupTermination {
+                reason: format!("invalid Linux process stat record: {}", stat_path.display()),
+            }
+        })?;
+        let mut fields = fields.split_whitespace();
+        let state = fields.next().ok_or_else(|| {
+            RunnerError::ProcessGroupTermination {
+                reason: format!("missing process state in {}", stat_path.display()),
+            }
+        })?;
+        let _parent = fields.next().ok_or_else(|| {
+            RunnerError::ProcessGroupTermination {
+                reason: format!("missing parent pid in {}", stat_path.display()),
+            }
+        })?;
+        let member_group = fields
+            .next()
+            .ok_or_else(|| RunnerError::ProcessGroupTermination {
+                reason: format!("missing process group in {}", stat_path.display()),
+            })?
+            .parse::<i32>()
+            .map_err(|error| RunnerError::ProcessGroupTermination {
+                reason: format!("invalid process group in {}: {error}", stat_path.display()),
+            })?;
+
+        if member_group == process_group && !matches!(state, "Z" | "X") {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 #[cfg(not(unix))]
