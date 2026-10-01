@@ -920,8 +920,12 @@ impl RunStore {
         finalized_doc.state = RunState::Finalized;
         finalized_doc.finalized_at_utc = Some(chrono_now());
         let run_path = self.run_dir.join("run.json");
+        let original_run = serialize_json_document(&run_path, &run_doc)?;
         let finalized_run = serialize_json_document(&run_path, &finalized_doc)?;
-        self.write_json("run.json", &finalized_doc)?;
+        if let Err(error) = atomic_write(&run_path, &finalized_run) {
+            atomic_write(&run_path, &original_run).map_err(|rollback| io_err(&run_path, rollback))?;
+            return Err(io_err(&run_path, error));
+        }
         files.insert(
             "run.json".to_owned(),
             Digest::sha256_hex(&finalized_run).value,
@@ -932,9 +936,12 @@ impl RunStore {
             sealed_by: TOOL_IDENTITY.to_owned(),
             files,
         };
-        if let Err(error) = self.write_json("bundle.json", &manifest) {
-            self.write_json("run.json", &run_doc)?;
-            return Err(error);
+        let manifest_path = self.run_dir.join("bundle.json");
+        let manifest_bytes = serialize_json_document(&manifest_path, &manifest)?;
+        if let Err(error) = atomic_write(&manifest_path, &manifest_bytes) {
+            let _ = fs::remove_file(&manifest_path);
+            atomic_write(&run_path, &original_run).map_err(|rollback| io_err(&run_path, rollback))?;
+            return Err(io_err(&manifest_path, error));
         }
         Ok(manifest)
     }
@@ -1374,6 +1381,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             Err(error) => return Err(error),
         }
     };
+    let mut published_path = false;
     let result = (|| {
         file.write_all(bytes)?;
         file.sync_all()?;
@@ -1382,6 +1390,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         #[cfg(not(target_os = "linux"))]
         drop(file);
         fs::rename(&tmp, path)?;
+        published_path = true;
         #[cfg(target_os = "linux")]
         {
             let mut options = fs::OpenOptions::new();
@@ -1409,7 +1418,11 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         Ok(())
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+        let _ = if published_path {
+            fs::remove_file(path)
+        } else {
+            fs::remove_file(&tmp)
+        };
     }
     result
 }
