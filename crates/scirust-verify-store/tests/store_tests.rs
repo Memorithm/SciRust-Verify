@@ -138,6 +138,31 @@ fn create_persist_read_finalize_roundtrip() {
 }
 
 #[test]
+fn failed_manifest_publication_restores_exact_run_bytes() {
+    let root = tmp_root("rollback-run-bytes");
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    store.write_artifact(&sample_artifact()).unwrap();
+    store.write_claims(&[]).unwrap();
+    let checks = Vec::<Check>::new();
+    let canonical = scirust_verify_model::canonical_json(&checks).unwrap();
+    store
+        .write_plan(&checks, Digest::sha256_hex(canonical.as_bytes()))
+        .unwrap();
+
+    let mut run_value = serde_json::to_value(store.read_run_document().unwrap()).unwrap();
+    run_value["forward_compatible_field"] = serde_json::json!({"kept": true});
+    let mut original = serde_json::to_vec(&run_value).unwrap();
+    original.extend_from_slice(b"\n\n");
+    std::fs::write(store.path().join("run.json"), &original).unwrap();
+    std::fs::create_dir(store.path().join("bundle.json")).unwrap();
+
+    assert!(matches!(store.finalize(), Err(StoreError::Io { .. })));
+    assert_eq!(std::fs::read(store.path().join("run.json")).unwrap(), original);
+    assert_eq!(store.read_run_document().unwrap().state, RunState::Planning);
+}
+
+#[test]
 fn finalized_runs_reject_mutation() {
     let root = tmp_root("frozen");
     let runs = RunsRoot::new(&root);
