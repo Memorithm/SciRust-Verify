@@ -81,6 +81,9 @@ oversized files, excessive entries or deep directory trees.
 entries, 4 GiB total, 1 GiB per regular file and 64 path components. Repeated
 attachment references are validated once per unique path. Limit violations
 fail closed before the run becomes finalized, and non-UTF-8 paths are rejected.
+Finalization also compares full bounded digest snapshots from before and after
+semantic validation, rejecting a tree changed by a concurrent writer instead
+of sealing the later version.
 
 ### Symlink escape in source-tree hashing
 
