@@ -76,12 +76,7 @@ impl SemanticSnapshot {
         }
     }
 
-    fn capture_file(
-        &mut self,
-        root: &Path,
-        rel: &str,
-        bytes: &[u8],
-    ) -> Result<(), StoreError> {
+    fn capture_file(&mut self, root: &Path, rel: &str, bytes: &[u8]) -> Result<(), StoreError> {
         self.file_sizes.insert(rel.to_owned(), bytes.len() as u64);
         let path = root.join(rel);
         match rel {
@@ -721,7 +716,10 @@ impl RunStore {
             StoreError::corrupt(self.run_id.as_str(), "required file `plan.json` is missing")
         })?;
         let claims = semantic_snapshot.claims.ok_or_else(|| {
-            StoreError::corrupt(self.run_id.as_str(), "required file `claims.json` is missing")
+            StoreError::corrupt(
+                self.run_id.as_str(),
+                "required file `claims.json` is missing",
+            )
         })?;
         if !semantic_snapshot.evidence_dir_present {
             return Err(StoreError::corrupt(
