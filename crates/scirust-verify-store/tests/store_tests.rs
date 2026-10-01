@@ -158,7 +158,10 @@ fn failed_manifest_publication_restores_exact_run_bytes() {
     std::fs::create_dir(store.path().join("bundle.json")).unwrap();
 
     assert!(matches!(store.finalize(), Err(StoreError::Io { .. })));
-    assert_eq!(std::fs::read(store.path().join("run.json")).unwrap(), original);
+    assert_eq!(
+        std::fs::read(store.path().join("run.json")).unwrap(),
+        original
+    );
     assert_eq!(store.read_run_document().unwrap().state, RunState::Planning);
 }
 
