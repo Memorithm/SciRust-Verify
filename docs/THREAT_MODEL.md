@@ -56,7 +56,8 @@ limits configurable per manifest; truncation recorded as evidence
 
 *Mitigation (implemented):* mandatory per-check timeouts. On Unix every check
 runs in a fresh process group; expiry kills and confirms the group before any
-output is accepted. Normal parent exit also cleans remaining descendants before
+output is accepted. Linux confirmation distinguishes inert zombies from live
+group members. Normal parent exit also cleans remaining descendants before
 capture. Stdout/stderr collection has its own one-second deadline and fails
 closed if EOF or group termination cannot be confirmed. `TimedOut` is recorded
 only after those checks succeed. Other targets retain child-level termination

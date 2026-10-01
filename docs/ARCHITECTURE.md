@@ -93,7 +93,8 @@ limits) and spawned directly — never through a shell. Output is drained by
 reader threads into bounded buffers; excess is discarded but *recorded*
 (`stdout_truncated`, `total_bytes`). Every command has a deadline. On Unix the
 runner creates a fresh process group, kills and confirms that group before
-draining after timeout or parent exit, and gives pipe collection an independent
+draining after timeout or parent exit (treating Linux zombie-only groups as
+terminated), and gives pipe collection an independent
 one-second deadline. Incomplete termination or capture is a runner error, not a
 successful timeout record. Other targets retain child-level termination and
 the bounded capture deadline. Spawn failures are records, not panics. The
