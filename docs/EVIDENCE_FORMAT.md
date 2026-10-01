@@ -118,9 +118,10 @@ Bundle readers treat run ids and every manifest/attachment key as hostile
 input. Run ids must match `run-<YYYYMMDDTHHMMSSZ>-<8 lowercase hex>` exactly;
 bundle paths must be canonical relative paths made only of normal components.
 Absolute paths, Windows prefixes, empty/`.`/`..` components, symlinks and
-non-regular files are rejected. On Linux, the final file is opened with
-`O_NOFOLLOW` and the opened descriptor identity is checked against the
-pre-open metadata before any bytes are accepted.
+non-regular files are rejected. On Linux, traversal starts from an opened run
+directory and pins each descendant directory descriptor; every component and
+the final file are opened with `O_NOFOLLOW`, with descriptor identity checked
+against pre-open metadata before any bytes are accepted.
 
 One traversal is limited to 16,384 files, 4 GiB total bytes, 1 GiB per file
 and 64 path components. Counter arithmetic is checked. Crossing any limit is
