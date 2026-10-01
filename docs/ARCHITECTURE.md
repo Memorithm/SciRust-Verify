@@ -91,9 +91,13 @@ the canonical JSON of the sorted plan can be stored (`planned_plan_digest`).
 Commands are structural (`program`, args, cwd, env policy, timeout, capture
 limits) and spawned directly — never through a shell. Output is drained by
 reader threads into bounded buffers; excess is discarded but *recorded*
-(`stdout_truncated`, `total_bytes`). Every command has a deadline; expiry
-kills the child and yields the distinct state `TimedOut`. Spawn failures are
-records, not panics. The default environment policy strips secret-like names
+(`stdout_truncated`, `total_bytes`). Every command has a deadline. On Unix the
+runner creates a fresh process group, kills and confirms that group before
+draining after timeout or parent exit, and gives pipe collection an independent
+one-second deadline. Incomplete termination or capture is a runner error, not a
+successful timeout record. Other targets retain child-level termination and
+the bounded capture deadline. Spawn failures are records, not panics. The
+default environment policy strips secret-like names
 (`TOKEN`, `PASSWORD`, `SECRET`, `API_KEY`, `AUTHORIZATION`,
 `PRIVATE_KEY`) and records only an allowlist in evidence. This is defense in
 depth, not a sandbox.

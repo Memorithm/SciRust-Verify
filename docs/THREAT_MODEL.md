@@ -54,8 +54,14 @@ limits configurable per manifest; truncation recorded as evidence
 
 *Threat:* a check hangs forever.
 
-*Mitigation (implemented):* mandatory per-check timeouts; expiry kills the
-child and records the distinct `TimedOut` state. Tested.
+*Mitigation (implemented):* mandatory per-check timeouts. On Unix every check
+runs in a fresh process group; expiry kills and confirms the group before any
+output is accepted. Normal parent exit also cleans remaining descendants before
+capture. Stdout/stderr collection has its own one-second deadline and fails
+closed if EOF or group termination cannot be confirmed. `TimedOut` is recorded
+only after those checks succeed. Other targets retain child-level termination
+and the independent capture deadline; this resource control is not sandboxing.
+Process-level tests cover timeout descendants and a descendant retaining pipes.
 
 ### Path traversal via attachment paths
 

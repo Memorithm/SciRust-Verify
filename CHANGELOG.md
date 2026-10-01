@@ -7,6 +7,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
 
 ### Security
 
+- Run Unix checks in dedicated process groups, clean descendants after timeout
+  or parent exit, confirm group termination, and fail closed when bounded
+  stdout/stderr drainage cannot complete independently (MEM-16).
 - Confine evidence-bundle reads to validated run-relative regular files,
   reject symlinks (including cycles), use no-follow descriptor opens on Linux,
   and enforce bounded file-count, byte and depth budgets (MEM-17).

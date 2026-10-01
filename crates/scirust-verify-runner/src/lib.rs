@@ -6,8 +6,8 @@
 //!   [`std::process::Command`] — never through a shell;
 //! * captured stdout/stderr are bounded; a hostile process cannot exhaust
 //!   memory (truncation is recorded as evidence);
-//! * every command carries a timeout; a timed-out child is killed and the
-//!   timeout is recorded distinctly from an assertion failure;
+//! * every command carries a timeout; Unix process groups are terminated and
+//!   confirmed before a timeout is recorded, and capture has its own deadline;
 //! * the default environment policy removes secret-like variables and
 //!   records only an allowlist of selected variables in evidence.
 
@@ -17,12 +17,17 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use scirust_verify_model::digest::Digest;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+const PROCESS_GROUP_CONFIRM_TIMEOUT: Duration = Duration::from_secs(1);
+const PIPE_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+const PROCESS_GROUP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Environment handling for a command execution.
 ///
@@ -288,6 +293,20 @@ pub enum RunnerError {
         /// Underlying error.
         source: std::io::Error,
     },
+    /// A process tree could not be stopped and confirmed before its deadline.
+    #[error("process-group termination could not be confirmed: {reason}")]
+    ProcessGroupTermination {
+        /// Why termination could not be confirmed.
+        reason: String,
+    },
+    /// Captured output did not reach a confirmed terminal state in time.
+    #[error("{stream} capture incomplete: {reason}")]
+    CaptureIncomplete {
+        /// Name of the incomplete stream.
+        stream: &'static str,
+        /// Why capture could not be completed.
+        reason: String,
+    },
 }
 
 /// Executes `spec`, capturing bounded output and enforcing the timeout.
@@ -311,6 +330,12 @@ pub fn execute(spec: &CommandSpec) -> Result<ExecutionRecord, RunnerError> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
     // Apply environment policy: strip secrets/removed vars, then apply sets.
     for (k, _) in std::env::vars_os() {
@@ -348,6 +373,7 @@ pub fn execute(spec: &CommandSpec) -> Result<ExecutionRecord, RunnerError> {
             });
         }
     };
+    let child_id = child.id();
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -366,10 +392,10 @@ pub fn execute(spec: &CommandSpec) -> Result<ExecutionRecord, RunnerError> {
                 thread::sleep(Duration::from_millis(5));
             }
             Err(e) => {
-                // A wait error here is exceptional; treat like a kill.
-                let _ = child.kill();
-                let _ = child.wait();
-                let (stdout, stderr) = join_capturers(stdout_handle, stderr_handle);
+                // A wait error is exceptional. Fail closed unless the entire
+                // process group and both capture streams reach terminal state.
+                terminate_and_confirm(&mut child, child_id, false)?;
+                let (stdout, stderr) = collect_capturers(stdout_handle, stderr_handle)?;
                 let ended_at_utc = chrono_utc_now();
                 return Ok(ExecutionRecord {
                     program: spec.program.clone(),
@@ -391,12 +417,8 @@ pub fn execute(spec: &CommandSpec) -> Result<ExecutionRecord, RunnerError> {
     };
 
     let timed_out = status.is_none();
-    if timed_out {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
-    let (stdout, stderr) = join_capturers(stdout_handle, stderr_handle);
+    terminate_and_confirm(&mut child, child_id, !timed_out)?;
+    let (stdout, stderr) = collect_capturers(stdout_handle, stderr_handle)?;
     let ended_at_utc = chrono_utc_now();
 
     let status = match (status, timed_out) {
@@ -432,17 +454,19 @@ fn signal_number(status: std::process::ExitStatus) -> i32 {
     status.signal().unwrap_or(-1)
 }
 
-fn spawn_capturer<R: Read + Send + 'static>(
-    pipe: Option<R>,
-    limit: u64,
-) -> Option<thread::JoinHandle<CapturedStream>> {
-    pipe.map(|mut stream| {
-        thread::spawn(move || {
-            let mut out = CapturedStream::empty();
+struct CapturedPipe {
+    receiver: Receiver<Result<CapturedStream, String>>,
+}
+
+fn spawn_capturer<R: Read + Send + 'static>(pipe: Option<R>, limit: u64) -> CapturedPipe {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut out = CapturedStream::empty();
+        let result = if let Some(mut stream) = pipe {
             let mut chunk = [0u8; 8192];
             loop {
                 match stream.read(&mut chunk) {
-                    Ok(0) => break,
+                    Ok(0) => break Ok(out),
                     Ok(n) => {
                         out.total_bytes += n as u64;
                         let remaining = limit.saturating_sub(out.data.len() as u64);
@@ -454,25 +478,123 @@ fn spawn_capturer<R: Read + Send + 'static>(
                             out.truncated = true;
                         }
                     }
-                    Err(_) => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => break Err(error.to_string()),
                 }
             }
-            out
-        })
-    })
+        } else {
+            Ok(out)
+        };
+        let _ = sender.send(result);
+    });
+    CapturedPipe { receiver }
 }
 
-fn join_capturers(
-    stdout: Option<thread::JoinHandle<CapturedStream>>,
-    stderr: Option<thread::JoinHandle<CapturedStream>>,
-) -> (CapturedStream, CapturedStream) {
-    let so = stdout
-        .and_then(|h| h.join().ok())
-        .unwrap_or_else(CapturedStream::empty);
-    let se = stderr
-        .and_then(|h| h.join().ok())
-        .unwrap_or_else(CapturedStream::empty);
-    (so, se)
+fn collect_capturers(
+    stdout: CapturedPipe,
+    stderr: CapturedPipe,
+) -> Result<(CapturedStream, CapturedStream), RunnerError> {
+    let deadline = Instant::now()
+        .checked_add(PIPE_DRAIN_TIMEOUT)
+        .unwrap_or_else(Instant::now);
+    let stdout = stdout.receive_before(deadline, "stdout")?;
+    let stderr = stderr.receive_before(deadline, "stderr")?;
+    Ok((stdout, stderr))
+}
+
+impl CapturedPipe {
+    fn receive_before(
+        self,
+        deadline: Instant,
+        stream: &'static str,
+    ) -> Result<CapturedStream, RunnerError> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match self.receiver.recv_timeout(remaining) {
+            Ok(Ok(captured)) => Ok(captured),
+            Ok(Err(reason)) => Err(RunnerError::CaptureIncomplete { stream, reason }),
+            Err(RecvTimeoutError::Timeout) => Err(RunnerError::CaptureIncomplete {
+                stream,
+                reason: "drain deadline elapsed".to_owned(),
+            }),
+            Err(RecvTimeoutError::Disconnected) => Err(RunnerError::CaptureIncomplete {
+                stream,
+                reason: "reader disconnected".to_owned(),
+            }),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn terminate_and_confirm(
+    child: &mut std::process::Child,
+    child_id: u32,
+    parent_reaped: bool,
+) -> Result<(), RunnerError> {
+    use nix::errno::Errno;
+    use nix::sys::signal::{killpg, Signal};
+    use nix::unistd::Pid;
+
+    let process_group = i32::try_from(child_id)
+        .map(Pid::from_raw)
+        .map_err(|error| RunnerError::ProcessGroupTermination {
+            reason: format!("invalid process-group identifier: {error}"),
+        })?;
+
+    match killpg(process_group, Signal::SIGKILL) {
+        Ok(()) => {}
+        Err(Errno::ESRCH) if parent_reaped => return Ok(()),
+        Err(error) => {
+            return Err(RunnerError::ProcessGroupTermination {
+                reason: format!("kill failed: {error}"),
+            });
+        }
+    }
+
+    if !parent_reaped {
+        child
+            .wait()
+            .map_err(|error| RunnerError::ProcessGroupTermination {
+                reason: format!("parent reap failed: {error}"),
+            })?;
+    }
+
+    let deadline = Instant::now()
+        .checked_add(PROCESS_GROUP_CONFIRM_TIMEOUT)
+        .unwrap_or_else(Instant::now);
+    loop {
+        match killpg(process_group, Option::<Signal>::None) {
+            Err(Errno::ESRCH) => return Ok(()),
+            Ok(()) => {}
+            Err(error) => {
+                return Err(RunnerError::ProcessGroupTermination {
+                    reason: format!("termination probe failed: {error}"),
+                });
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(RunnerError::ProcessGroupTermination {
+                reason: "group still exists after confirmation deadline".to_owned(),
+            });
+        }
+        thread::sleep(PROCESS_GROUP_POLL_INTERVAL);
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_and_confirm(
+    child: &mut std::process::Child,
+    _child_id: u32,
+    parent_reaped: bool,
+) -> Result<(), RunnerError> {
+    if parent_reaped {
+        return Ok(());
+    }
+    child
+        .kill()
+        .and_then(|()| child.wait().map(|_| ()))
+        .map_err(|error| RunnerError::ProcessGroupTermination {
+            reason: format!("child termination failed: {error}"),
+        })
 }
 
 fn chrono_utc_now() -> String {
@@ -516,4 +638,29 @@ fn is_executable(_p: &Path) -> bool {
 /// Helper converting a path to a lossy string for evidence.
 pub fn path_display(p: &Path) -> String {
     p.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_wait_is_bounded_and_fails_closed() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let capture = CapturedPipe { receiver };
+        let started = Instant::now();
+        let error = capture
+            .receive_before(Instant::now() + Duration::from_millis(20), "stdout")
+            .expect_err("an open writer must not be reported as complete capture");
+        drop(sender);
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(
+            error,
+            RunnerError::CaptureIncomplete {
+                stream: "stdout",
+                reason
+            } if reason == "drain deadline elapsed"
+        ));
+    }
 }
