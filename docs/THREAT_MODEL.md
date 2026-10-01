@@ -67,9 +67,10 @@ attacker-controlled filenames for payloads.
 
 Bundle ingestion additionally validates the exact run-id shape and every
 manifest key, rejects symlinks and special files, bounds file count, total
-bytes, per-file bytes and directory depth, and uses a no-follow descriptor
-open plus identity check on Linux. Other targets retain component and file-type
-checks but do not claim the Linux descriptor-level race protection.
+bytes, per-file bytes and directory depth. On Linux it pins the run directory
+and every traversed directory descriptor, applies no-follow opens to each
+component and compares descriptor identity. Other targets retain component and
+file-type checks but do not claim the Linux descriptor-level race protection.
 
 ### Malicious bundle size or shape
 
