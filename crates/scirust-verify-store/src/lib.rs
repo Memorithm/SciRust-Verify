@@ -647,6 +647,19 @@ impl RunStore {
             return Err(StoreError::Frozen(self.run_id.clone()));
         }
 
+        // Capture the exact tree before semantic validation. A second
+        // bounded snapshot below must match byte-for-byte, preventing a
+        // concurrently mutated version from being sealed after another
+        // version supplied the validated semantics.
+        let mut validation_snapshot = BTreeMap::new();
+        let mut validation_snapshot_budget = ReadBudget::default();
+        self.collect_files(
+            &self.run_dir,
+            0,
+            &mut validation_snapshot_budget,
+            &mut validation_snapshot,
+        )?;
+
         // Required documents.
         let _artifact = self.read_artifact()?;
         let plan = self.read_plan()?;
@@ -762,6 +775,12 @@ impl RunStore {
         let mut files = BTreeMap::new();
         let mut budget = ReadBudget::default();
         self.collect_files(&self.run_dir, 0, &mut budget, &mut files)?;
+        if files != validation_snapshot {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                "bundle changed during finalization validation",
+            ));
+        }
         self.set_state(RunState::Finalized)?;
         let mut run_budget = ReadBudget::default();
         let finalized_run = match self.read_bounded_regular("run.json", &mut run_budget) {
