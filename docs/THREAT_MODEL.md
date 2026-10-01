@@ -83,7 +83,8 @@ attachment references are validated once per unique path. Limit violations
 fail closed before the run becomes finalized, and non-UTF-8 paths are rejected.
 Finalization also compares full bounded digest snapshots from before and after
 semantic validation, rejecting a tree changed by a concurrent writer instead
-of sealing the later version.
+of sealing the later version. Final lifecycle metadata is derived from the
+validated in-memory run document rather than reloading a mutable file.
 
 ### Symlink escape in source-tree hashing
 
