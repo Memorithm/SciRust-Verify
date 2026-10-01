@@ -28,8 +28,11 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::io::{self, Read as _, Write as _};
+use std::path::{Component, Path, PathBuf};
+
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 
 use scirust_verify_model::check::{Check, CheckExecution};
 use scirust_verify_model::claim::Claim;
@@ -40,6 +43,49 @@ use scirust_verify_model::scope::EnvironmentSnapshot;
 use scirust_verify_model::{Artifact, RunId, SCHEMA_VERSION, TOOL_IDENTITY};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+const MAX_BUNDLE_FILES: usize = 16_384;
+const MAX_BUNDLE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_BUNDLE_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_BUNDLE_DEPTH: usize = 64;
+
+#[derive(Debug, Default)]
+struct ReadBudget {
+    files: usize,
+    bytes: u64,
+}
+
+impl ReadBudget {
+    fn account(&mut self, run_id: &str, rel: &str, size: u64) -> Result<(), StoreError> {
+        if size > MAX_BUNDLE_FILE_BYTES {
+            return Err(StoreError::corrupt(
+                run_id,
+                format!(
+                    "file `{rel}` is {size} bytes, exceeding the per-file limit of {MAX_BUNDLE_FILE_BYTES}"
+                ),
+            ));
+        }
+        self.files = self.files.checked_add(1).ok_or_else(|| {
+            StoreError::corrupt(run_id, "bundle file counter overflowed")
+        })?;
+        if self.files > MAX_BUNDLE_FILES {
+            return Err(StoreError::corrupt(
+                run_id,
+                format!("bundle exceeds the {MAX_BUNDLE_FILES} file limit"),
+            ));
+        }
+        self.bytes = self.bytes.checked_add(size).ok_or_else(|| {
+            StoreError::corrupt(run_id, "bundle byte counter overflowed")
+        })?;
+        if self.bytes > MAX_BUNDLE_BYTES {
+            return Err(StoreError::corrupt(
+                run_id,
+                format!("bundle exceeds the {MAX_BUNDLE_BYTES} byte limit"),
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Lifecycle of a verification run.
 ///
@@ -208,6 +254,7 @@ impl RunsRoot {
     /// Creates a run with an explicit identifier (used by replay to keep the
     /// freshly generated id).
     pub fn create_run_with_id(&self, run_id: RunId) -> Result<RunStore, StoreError> {
+        validate_run_id(run_id.as_str())?;
         let run_dir = self.0.join(run_id.as_str());
         if run_dir.exists() {
             return Err(StoreError::Corrupt {
@@ -235,9 +282,15 @@ impl RunsRoot {
 
     /// Opens an existing run by id.
     pub fn open(&self, run_id: &str) -> Result<RunStore, StoreError> {
+        validate_run_id(run_id)?;
         let run_dir = self.0.join(run_id);
-        if !run_dir.is_dir() {
-            return Err(StoreError::NotFound(run_id.to_owned()));
+        let metadata = fs::symlink_metadata(&run_dir)
+            .map_err(|_| StoreError::NotFound(run_id.to_owned()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(StoreError::corrupt(
+                run_id,
+                "run path is not a real directory",
+            ));
         }
         Ok(RunStore {
             run_dir,
@@ -488,15 +541,42 @@ impl RunStore {
     pub fn read_all_evidence(&self) -> Result<Vec<Evidence>, StoreError> {
         let dir = self.run_dir.join("evidence");
         let mut out = Vec::new();
-        if !dir.is_dir() {
-            return Ok(out);
+        let metadata = match fs::symlink_metadata(&dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(error) => return Err(io_err(&dir, error)),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                "`evidence` is not a real directory",
+            ));
         }
         let entries = fs::read_dir(&dir).map_err(|e| io_err(&dir, e))?;
+        let mut budget = ReadBudget::default();
         for entry in entries {
             let entry = entry.map_err(|e| io_err(&dir, e))?;
             let path = entry.path();
+            let file_type = entry.file_type().map_err(|e| io_err(&path, e))?;
+            if file_type.is_symlink() {
+                return Err(StoreError::corrupt(
+                    self.run_id.as_str(),
+                    format!("symlink `{}` is not allowed in evidence", path.display()),
+                ));
+            }
             if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                let bytes = fs::read(&path).map_err(|e| io_err(&path, e))?;
+                if !file_type.is_file() {
+                    return Err(StoreError::corrupt(
+                        self.run_id.as_str(),
+                        format!("evidence entry `{}` is not a regular file", path.display()),
+                    ));
+                }
+                let rel = path
+                    .strip_prefix(&self.run_dir)
+                    .map_err(|_| StoreError::corrupt(self.run_id.as_str(), "evidence path escaped run"))?
+                    .to_string_lossy()
+                    .into_owned();
+                let bytes = self.read_bounded_regular(&rel, &mut budget)?;
                 let ev: Evidence =
                     serde_json::from_slice(&bytes).map_err(|e| StoreError::Serde {
                         path: path.clone(),
@@ -520,8 +600,16 @@ impl RunStore {
 
     /// Reads a previously written text artifact.
     pub fn read_text(&self, rel_path: &str) -> Result<String, StoreError> {
-        let path = self.run_dir.join(sanitize_attachment_path(rel_path)?);
-        fs::read_to_string(&path).map_err(|e| io_err(path, e))
+        let rel = sanitize_attachment_path(rel_path)?;
+        let path = self.run_dir.join(&rel);
+        let mut budget = ReadBudget::default();
+        let bytes = self.read_bounded_regular(&rel, &mut budget)?;
+        String::from_utf8(bytes).map_err(|error| {
+            io_err(
+                path,
+                io::Error::new(io::ErrorKind::InvalidData, error),
+            )
+        })
     }
 
     /// Validates dossier structure and seals it with `bundle.json`.
@@ -566,8 +654,9 @@ impl RunStore {
         // Attachment existence + integrity.
         for ev in &evidence {
             for att in &ev.attachments {
-                let path = self.run_dir.join(&att.path);
-                let bytes = fs::read(&path).map_err(|_| {
+                let rel = sanitize_attachment_path(&att.path)?;
+                let mut budget = ReadBudget::default();
+                let bytes = self.read_bounded_regular(&rel, &mut budget).map_err(|_| {
                     StoreError::corrupt(
                         self.run_id.as_str(),
                         format!("referenced attachment `{}` is missing", att.path),
@@ -644,7 +733,8 @@ impl RunStore {
         // last so the manifest covers the complete frozen content.
         self.set_state(RunState::Finalized)?;
         let mut files = BTreeMap::new();
-        collect_files(&self.run_dir, self.run_dir.clone(), &mut files)?;
+        let mut budget = ReadBudget::default();
+        self.collect_files(&self.run_dir, 0, &mut budget, &mut files)?;
         let manifest = BundleManifest {
             schema_version: SCHEMA_VERSION,
             algorithm: "sha256".to_owned(),
@@ -666,9 +756,22 @@ impl RunStore {
             ));
         }
         let manifest: BundleManifest = self.read_json("bundle.json")?;
+        if manifest.files.len() > MAX_BUNDLE_FILES {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("manifest exceeds the {MAX_BUNDLE_FILES} file limit"),
+            ));
+        }
+        let mut sealed_budget = ReadBudget::default();
         for (rel, expected_hex) in &manifest.files {
-            let path = self.run_dir.join(rel);
-            let bytes = fs::read(&path).map_err(|_| {
+            let safe_rel = sanitize_attachment_path(rel)?;
+            if safe_rel == "bundle.json" {
+                return Err(StoreError::corrupt(
+                    self.run_id.as_str(),
+                    "manifest must not seal itself",
+                ));
+            }
+            let bytes = self.read_bounded_regular(&safe_rel, &mut sealed_budget).map_err(|_| {
                 StoreError::corrupt(
                     self.run_id.as_str(),
                     format!("sealed file `{rel}` is missing"),
@@ -687,7 +790,8 @@ impl RunStore {
         }
         // Every non-manifest file must be sealed too (detect additions).
         let mut present = BTreeMap::new();
-        collect_files(&self.run_dir, self.run_dir.clone(), &mut present)?;
+        let mut present_budget = ReadBudget::default();
+        self.collect_files(&self.run_dir, 0, &mut present_budget, &mut present)?;
         present.remove("bundle.json");
         for rel in present.keys() {
             if !manifest.files.contains_key(rel) {
@@ -717,8 +821,10 @@ impl RunStore {
     }
 
     fn read_json<T: for<'de> Deserialize<'de>>(&self, rel: &str) -> Result<T, StoreError> {
-        let path = self.run_dir.join(rel);
-        let bytes = fs::read(&path).map_err(|e| io_err(path.clone(), e))?;
+        let rel = sanitize_attachment_path(rel)?;
+        let path = self.run_dir.join(&rel);
+        let mut budget = ReadBudget::default();
+        let bytes = self.read_bounded_regular(&rel, &mut budget)?;
         serde_json::from_slice(&bytes).map_err(|e| StoreError::Serde { path, source: e })
     }
 
@@ -728,6 +834,105 @@ impl RunStore {
         }
         let manifest: BundleManifest = self.read_json("bundle.json")?;
         Ok(manifest.files.contains_key(rel))
+    }
+
+    fn read_bounded_regular(
+        &self,
+        rel: &str,
+        budget: &mut ReadBudget,
+    ) -> Result<Vec<u8>, StoreError> {
+        let rel = sanitize_attachment_path(rel)?;
+        let path = self.run_dir.join(&rel);
+        reject_symlink_components(&self.run_dir, &rel, self.run_id.as_str())?;
+        let before = fs::symlink_metadata(&path).map_err(|e| io_err(&path, e))?;
+        if before.file_type().is_symlink() || !before.is_file() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("`{rel}` is not a regular file"),
+            ));
+        }
+        budget.account(self.run_id.as_str(), &rel, before.len())?;
+
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(target_os = "linux")]
+        options.custom_flags(0o400000); // O_NOFOLLOW
+        let mut file = options.open(&path).map_err(|e| io_err(&path, e))?;
+        let opened = file.metadata().map_err(|e| io_err(&path, e))?;
+        if !opened.is_file() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("`{rel}` changed type while it was opened"),
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("`{rel}` changed while it was opened"),
+            ));
+        }
+
+        let capacity = usize::try_from(before.len().min(1024 * 1024)).unwrap_or(1024 * 1024);
+        let mut bytes = Vec::with_capacity(capacity);
+        file.by_ref()
+            .take(MAX_BUNDLE_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| io_err(&path, e))?;
+        if bytes.len() as u64 != before.len() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("`{rel}` changed size while it was read"),
+            ));
+        }
+        Ok(bytes)
+    }
+
+    fn collect_files(
+        &self,
+        dir: &Path,
+        depth: usize,
+        budget: &mut ReadBudget,
+        out: &mut BTreeMap<String, String>,
+    ) -> Result<(), StoreError> {
+        if depth > MAX_BUNDLE_DEPTH {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("bundle exceeds the {MAX_BUNDLE_DEPTH} directory-depth limit"),
+            ));
+        }
+        let entries = fs::read_dir(dir).map_err(|e| io_err(dir, e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| io_err(dir, e))?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|e| io_err(&path, e))?;
+            if file_type.is_symlink() {
+                return Err(StoreError::corrupt(
+                    self.run_id.as_str(),
+                    format!("symlink `{}` is not allowed in a bundle", path.display()),
+                ));
+            }
+            if file_type.is_dir() {
+                self.collect_files(&path, depth + 1, budget, out)?;
+            } else if file_type.is_file() {
+                let rel = path
+                    .strip_prefix(&self.run_dir)
+                    .map_err(|_| StoreError::corrupt(self.run_id.as_str(), "bundle path escaped run"))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if rel == "bundle.json" {
+                    continue;
+                }
+                let bytes = self.read_bounded_regular(&rel, budget)?;
+                out.insert(rel, Digest::sha256_hex(&bytes).value);
+            } else {
+                return Err(StoreError::corrupt(
+                    self.run_id.as_str(),
+                    format!("special file `{}` is not allowed in a bundle", path.display()),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -761,13 +966,68 @@ fn ensure_unique<'a>(items: impl Iterator<Item = &'a str>, what: &str) -> Result
 
 /// Rejects absolute paths and traversal outside the run directory.
 pub(crate) fn sanitize_attachment_path(rel: &str) -> Result<String, StoreError> {
-    if rel.is_empty() || rel.starts_with('/') || rel.split(['/', '\\']).any(|c| c == "..") {
+    let components: Vec<_> = Path::new(rel).components().collect();
+    let is_safe = !rel.is_empty()
+        && !rel.contains('\\')
+        && !rel.contains(':')
+        && rel
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+        && components.len() <= MAX_BUNDLE_DEPTH
+        && components
+            .iter()
+            .all(|component| matches!(component, Component::Normal(_)));
+    if !is_safe {
         return Err(StoreError::Corrupt {
             run_id: "(path)".to_owned(),
             reason: format!("unsafe attachment path `{rel}`"),
         });
     }
     Ok(rel.to_owned())
+}
+
+fn validate_run_id(run_id: &str) -> Result<(), StoreError> {
+    let bytes = run_id.as_bytes();
+    let valid = bytes.len() == 29
+        && bytes.starts_with(b"run-")
+        && bytes[4..12].iter().all(u8::is_ascii_digit)
+        && bytes[12] == b'T'
+        && bytes[13..19].iter().all(u8::is_ascii_digit)
+        && bytes[19] == b'Z'
+        && bytes[20] == b'-'
+        && bytes[21..].iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte));
+    if !valid {
+        return Err(StoreError::corrupt(
+            run_id,
+            "invalid run id; expected run-<YYYYMMDDTHHMMSSZ>-<8 lowercase hex>",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_symlink_components(root: &Path, rel: &str, run_id: &str) -> Result<(), StoreError> {
+    let mut current = root.to_path_buf();
+    let components: Vec<_> = Path::new(rel).components().collect();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(name) = component else {
+            return Err(StoreError::corrupt(run_id, format!("unsafe path `{rel}`")));
+        };
+        current.push(name);
+        let metadata = fs::symlink_metadata(&current).map_err(|e| io_err(&current, e))?;
+        if metadata.file_type().is_symlink() {
+            return Err(StoreError::corrupt(
+                run_id,
+                format!("symlink `{}` is not allowed", current.display()),
+            ));
+        }
+        if index + 1 < components.len() && !metadata.is_dir() {
+            return Err(StoreError::corrupt(
+                run_id,
+                format!("path component `{}` is not a directory", current.display()),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -787,34 +1047,10 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-fn collect_files(
-    root: &Path,
-    dir: PathBuf,
-    out: &mut BTreeMap<String, String>,
-) -> Result<(), StoreError> {
-    let entries = fs::read_dir(&dir).map_err(|e| io_err(dir.clone(), e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| io_err(&dir, e))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(root, path, out)?;
-        } else {
-            let rel = path
-                .strip_prefix(root)
-                .expect("strip_prefix of collected subpath")
-                .to_string_lossy()
-                .into_owned();
-            if rel == "bundle.json" {
-                continue;
-            }
-            let bytes = fs::read(&path).map_err(|e| io_err(path, e))?;
-            out.insert(rel, Digest::sha256_hex(&bytes).value);
-        }
-    }
-    Ok(())
-}
-
 fn chrono_now() -> String {
     use chrono::SecondsFormat;
     chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true)
 }
+
+#[cfg(test)]
+mod tests;
