@@ -33,8 +33,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd as _;
-#[cfg(target_os = "linux")]
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 
 use scirust_verify_model::check::{Check, CheckExecution};
@@ -46,6 +44,50 @@ use scirust_verify_model::scope::EnvironmentSnapshot;
 use scirust_verify_model::{Artifact, RunId, SCHEMA_VERSION, TOOL_IDENTITY};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod linux_openat {
+    use std::ffi::{CString, OsStr};
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::raw::c_char;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    const O_RDONLY: i32 = 0;
+    const O_DIRECTORY: i32 = 0o200000;
+    const O_NOFOLLOW: i32 = 0o400000;
+    const O_CLOEXEC: i32 = 0o2000000;
+
+    unsafe extern "C" {
+        fn openat(dirfd: i32, pathname: *const c_char, flags: i32, ...) -> i32;
+    }
+
+    pub(super) fn open_directory(parent: &File, name: &OsStr) -> io::Result<File> {
+        open(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    }
+
+    pub(super) fn open_file(parent: &File, name: &OsStr) -> io::Result<File> {
+        open(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+    }
+
+    fn open(parent: &File, name: &OsStr, flags: i32) -> io::Result<File> {
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+        // SAFETY: `name` is NUL-terminated and alive for the call, `parent`
+        // owns a valid directory descriptor, no mode argument is needed
+        // because O_CREAT is absent, and a successful descriptor is adopted
+        // exactly once by `File`.
+        let descriptor = unsafe { openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+        if descriptor < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            // SAFETY: `openat` returned a new owned descriptor on success.
+            Ok(unsafe { File::from_raw_fd(descriptor) })
+        }
+    }
+}
 
 const MAX_BUNDLE_FILES: usize = 16_384;
 const MAX_BUNDLE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -1032,31 +1074,17 @@ impl RunStore {
                     format!("unsafe path `{rel}`"),
                 ));
             };
-            let descriptor_path = descriptor_child_path(&parent, name);
-            let before = fs::symlink_metadata(&descriptor_path)
-                .map_err(|error| io_err(&descriptor_path, error))?;
-            if before.file_type().is_symlink() || !before.is_dir() {
+            let display_path = self.run_dir.join(rel);
+            let opened = linux_openat::open_directory(&parent, name)
+                .map_err(|error| io_err(&display_path, error))?;
+            let opened_metadata = opened
+                .metadata()
+                .map_err(|error| io_err(&display_path, error))?;
+            if !opened_metadata.is_dir() {
                 return Err(StoreError::corrupt(
                     self.run_id.as_str(),
                     format!(
                         "path component `{}` is not a real directory",
-                        name.to_string_lossy()
-                    ),
-                ));
-            }
-            let mut options = fs::OpenOptions::new();
-            options.read(true).custom_flags(0o600000); // O_DIRECTORY | O_NOFOLLOW
-            let opened = options
-                .open(&descriptor_path)
-                .map_err(|error| io_err(&descriptor_path, error))?;
-            let opened_metadata = opened
-                .metadata()
-                .map_err(|error| io_err(&descriptor_path, error))?;
-            if before.dev() != opened_metadata.dev() || before.ino() != opened_metadata.ino() {
-                return Err(StoreError::corrupt(
-                    self.run_id.as_str(),
-                    format!(
-                        "path component `{}` changed while it was opened",
                         name.to_string_lossy()
                     ),
                 ));
@@ -1070,36 +1098,24 @@ impl RunStore {
                 format!("unsafe path `{rel}`"),
             ));
         };
-        let descriptor_path = descriptor_child_path(&parent, file_name);
-        let before = fs::symlink_metadata(&descriptor_path)
-            .map_err(|error| io_err(&descriptor_path, error))?;
-        if before.file_type().is_symlink() || !before.is_file() {
+        let display_path = self.run_dir.join(rel);
+        let file = linux_openat::open_file(&parent, file_name)
+            .map_err(|error| io_err(&display_path, error))?;
+        let opened = file
+            .metadata()
+            .map_err(|error| io_err(&display_path, error))?;
+        if !opened.is_file() {
             return Err(StoreError::corrupt(
                 self.run_id.as_str(),
                 format!("`{rel}` is not a regular file"),
             ));
         }
-        budget.account(self.run_id.as_str(), rel, before.len())?;
-
-        let mut options = fs::OpenOptions::new();
-        options.read(true).custom_flags(0o400000); // O_NOFOLLOW
-        let file = options
-            .open(&descriptor_path)
-            .map_err(|error| io_err(&descriptor_path, error))?;
-        let opened = file
-            .metadata()
-            .map_err(|error| io_err(&descriptor_path, error))?;
-        if !opened.is_file() || before.dev() != opened.dev() || before.ino() != opened.ino() {
-            return Err(StoreError::corrupt(
-                self.run_id.as_str(),
-                format!("`{rel}` changed while it was opened"),
-            ));
-        }
+        budget.account(self.run_id.as_str(), rel, opened.len())?;
         read_opened_file(
             file,
-            &descriptor_path,
+            &display_path,
             rel,
-            before.len(),
+            opened.len(),
             self.run_id.as_str(),
         )
     }
@@ -1310,13 +1326,6 @@ fn reject_symlink_components(root: &Path, rel: &str, run_id: &str) -> Result<(),
         }
     }
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn descriptor_child_path(parent: &fs::File, name: &std::ffi::OsStr) -> PathBuf {
-    PathBuf::from("/proc/self/fd")
-        .join(parent.as_raw_fd().to_string())
-        .join(name)
 }
 
 fn read_opened_file(
