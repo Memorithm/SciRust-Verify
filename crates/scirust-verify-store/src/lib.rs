@@ -877,7 +877,7 @@ impl RunStore {
 
         let capacity = usize::try_from(before.len().min(1024 * 1024)).unwrap_or(1024 * 1024);
         let mut bytes = Vec::with_capacity(capacity);
-        file.by_ref()
+        std::io::Read::by_ref(&mut file)
             .take(MAX_BUNDLE_FILE_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| io_err(&path, e))?;
