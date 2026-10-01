@@ -1349,10 +1349,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .unwrap_or_default();
     let (tmp, mut file) = loop {
         let nonce = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let candidate = path.with_extension(format!(
-            "{extension}tmp-{}-{nonce}",
-            std::process::id()
-        ));
+        let candidate =
+            path.with_extension(format!("{extension}tmp-{}-{nonce}", std::process::id()));
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
