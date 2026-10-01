@@ -1371,8 +1371,26 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let result = (|| {
         file.write_all(bytes)?;
         file.sync_all()?;
+        #[cfg(target_os = "linux")]
+        let written = file.metadata()?;
+        #[cfg(not(target_os = "linux"))]
         drop(file);
-        fs::rename(&tmp, path)
+        fs::rename(&tmp, path)?;
+        #[cfg(target_os = "linux")]
+        {
+            let mut options = fs::OpenOptions::new();
+            options.read(true).custom_flags(0o400000); // O_NOFOLLOW
+            let published = options.open(path)?;
+            let published_metadata = published.metadata()?;
+            if written.dev() != published_metadata.dev() || written.ino() != published_metadata.ino()
+            {
+                return Err(io::Error::other(
+                    "atomic-write temporary was replaced before publication",
+                ));
+            }
+            drop(file);
+        }
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
