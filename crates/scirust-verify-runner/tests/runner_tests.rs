@@ -54,6 +54,35 @@ fn timeout_kills_process_and_is_distinct() {
     assert!(rec.duration_ns < Duration::from_secs(5).as_nanos() as u64);
 }
 
+#[cfg(unix)]
+#[test]
+fn parent_exit_kills_descendants_before_bounded_pipe_drain() {
+    let cwd = tmpdir("descendant-pipe");
+    let spec = CommandSpec::new("sh", &cwd)
+        .args(["-c", "(sleep 30) & printf parent-finished"])
+        .timeout(Duration::from_secs(2));
+    let started = std::time::Instant::now();
+    let rec = execute(&spec).unwrap();
+
+    assert_eq!(rec.exit_code(), Some(0));
+    assert_eq!(rec.stdout_lossy(), "parent-finished");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[cfg(unix)]
+#[test]
+fn timeout_kills_the_process_group_before_capture() {
+    let cwd = tmpdir("timeout-group");
+    let spec = CommandSpec::new("sh", &cwd)
+        .args(["-c", "(sleep 30) & sleep 30"])
+        .timeout(Duration::from_millis(150));
+    let started = std::time::Instant::now();
+    let rec = execute(&spec).unwrap();
+
+    assert_eq!(rec.status, ExitStatus::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
 #[test]
 fn large_stdout_is_bounded_and_flagged() {
     let cwd = tmpdir("large");
