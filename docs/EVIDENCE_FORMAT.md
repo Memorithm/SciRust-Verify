@@ -112,6 +112,20 @@ verifies existence, size and digest of every referenced attachment.
 Corruption examples detected: modified evidence text, deleted log payload,
 swapped artifact name, injected files, duplicate ids, broken references.
 
+### Reader confinement and resource limits
+
+Bundle readers treat run ids and every manifest/attachment key as hostile
+input. Run ids must match `run-<YYYYMMDDTHHMMSSZ>-<8 lowercase hex>` exactly;
+bundle paths must be canonical relative paths made only of normal components.
+Absolute paths, Windows prefixes, empty/`.`/`..` components, symlinks and
+non-regular files are rejected. On Linux, the final file is opened with
+`O_NOFOLLOW` and the opened descriptor identity is checked against the
+pre-open metadata before any bytes are accepted.
+
+One traversal is limited to 16,384 files, 4 GiB total bytes, 1 GiB per file
+and 64 path components. Counter arithmetic is checked. Crossing any limit is
+reported as bundle corruption; readers never continue with a partial dossier.
+
 ## Canonicalization contract
 
 Wherever structured data is hashed (plan digests, fingerprints):
