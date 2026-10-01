@@ -355,6 +355,93 @@ fn verdict_semantics_are_preserved_through_storage() {
 }
 
 #[test]
+fn opening_a_run_rejects_traversal_and_absolute_ids() {
+    let root = tmp_root("run-id-paths");
+    let runs = RunsRoot::new(&root);
+
+    for invalid in ["../../outside", "/tmp/run-20260101T000000Z-12345678"] {
+        assert!(matches!(
+            runs.open(invalid),
+            Err(StoreError::Corrupt { .. })
+        ));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn evidence_reader_rejects_symlinked_json() {
+    use std::os::unix::fs::symlink;
+
+    let root = tmp_root("evidence-symlink");
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    let outside = root.join("outside.json");
+    std::fs::write(&outside, b"{}").unwrap();
+    symlink(&outside, store.path().join("evidence/ev-0001.json")).unwrap();
+
+    assert!(matches!(
+        store.read_all_evidence(),
+        Err(StoreError::Corrupt { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn finalization_rejects_symlink_cycles() {
+    use std::os::unix::fs::symlink;
+
+    let root = tmp_root("symlink-cycle");
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    store.write_artifact(&sample_artifact()).unwrap();
+    store.write_claims(&[]).unwrap();
+    let canonical = scirust_verify_model::canonical_json(&Vec::<Check>::new()).unwrap();
+    store
+        .write_plan(
+            &[],
+            scirust_verify_model::Digest::sha256_hex(canonical.as_bytes()),
+        )
+        .unwrap();
+    std::fs::create_dir(store.path().join("cycle")).unwrap();
+    symlink("../cycle", store.path().join("cycle/again")).unwrap();
+
+    assert!(matches!(
+        store.finalize(),
+        Err(StoreError::Corrupt { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn integrity_reader_rejects_symlinked_sealed_file() {
+    use std::os::unix::fs::symlink;
+
+    let root = tmp_root("sealed-symlink");
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    store.write_artifact(&sample_artifact()).unwrap();
+    store.write_claims(&[]).unwrap();
+    let canonical = scirust_verify_model::canonical_json(&Vec::<Check>::new()).unwrap();
+    store
+        .write_plan(
+            &[],
+            scirust_verify_model::Digest::sha256_hex(canonical.as_bytes()),
+        )
+        .unwrap();
+    store.finalize().unwrap();
+
+    let artifact = store.path().join("artifact.json");
+    let outside = root.join("outside-artifact.json");
+    std::fs::rename(&artifact, &outside).unwrap();
+    symlink(&outside, &artifact).unwrap();
+
+    assert!(matches!(
+        store.verify_integrity(),
+        Err(StoreError::Corrupt { .. })
+    ));
+}
+
+#[test]
 fn duplicate_evidence_id_writes_are_rejected() {
     let root = tmp_root("dup-ev");
     let runs = RunsRoot::new(&root);
