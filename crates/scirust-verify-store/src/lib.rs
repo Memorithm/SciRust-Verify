@@ -85,7 +85,9 @@ impl SemanticSnapshot {
             "plan.json" => self.plan = Some(deserialize_snapshot(&path, bytes)?),
             "claims.json" => self.claims = Some(deserialize_snapshot(&path, bytes)?),
             "executions.json" => self.executions = Some(deserialize_snapshot(&path, bytes)?),
-            _ if Path::new(rel).parent() == Some(Path::new("evidence")) => {
+            _ if Path::new(rel).parent() == Some(Path::new("evidence"))
+                && Path::new(rel).extension().and_then(|value| value.to_str()) == Some("json") =>
+            {
                 self.evidence.push(deserialize_snapshot(&path, bytes)?);
             }
             _ => {}
