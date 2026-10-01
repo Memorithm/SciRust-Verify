@@ -29,7 +29,14 @@ fn read_budget_rejects_file_count_and_byte_overflow() {
 
 #[test]
 fn path_policy_rejects_absolute_traversal_and_excessive_depth() {
-    for invalid in ["../../escape", "/absolute", "C:/absolute", "a\\..\\escape", "a//b", "./a"] {
+    for invalid in [
+        "../../escape",
+        "/absolute",
+        "C:/absolute",
+        "a\\..\\escape",
+        "a//b",
+        "./a",
+    ] {
         assert!(matches!(
             sanitize_attachment_path(invalid),
             Err(StoreError::Corrupt { .. })
