@@ -129,6 +129,11 @@ arithmetic is checked. Crossing any limit is reported as bundle corruption;
 readers never continue with a partial dossier. Non-UTF-8 names are rejected so
 two different native paths can never collapse to one manifest key.
 
+Finalization takes a bounded digest snapshot before semantic validation and a
+second snapshot immediately before the lifecycle transition. Any difference
+fails closed, so the manifest cannot seal a different stable file version from
+the one present when validation began.
+
 ## Canonicalization contract
 
 Wherever structured data is hashed (plan digests, fingerprints):
