@@ -1065,11 +1065,9 @@ impl RunStore {
                 budget.account_entry(self.run_id.as_str())?;
                 self.collect_files(&path, depth + 1, budget, out)?;
             } else if file_type.is_file() {
-                let relative = path
-                    .strip_prefix(&self.run_dir)
-                    .map_err(|_| {
-                        StoreError::corrupt(self.run_id.as_str(), "bundle path escaped run")
-                    })?;
+                let relative = path.strip_prefix(&self.run_dir).map_err(|_| {
+                    StoreError::corrupt(self.run_id.as_str(), "bundle path escaped run")
+                })?;
                 let rel = relative
                     .to_str()
                     .ok_or_else(|| {
