@@ -261,6 +261,37 @@ fn execution_referencing_missing_evidence_fails_finalize() {
         })
         .unwrap();
     assert!(matches!(store.finalize(), Err(StoreError::Corrupt { .. })));
+    assert_eq!(
+        store.read_run_document().unwrap().state,
+        RunState::Planning
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn finalization_rejects_non_utf8_bundle_paths_without_freezing() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tmp_root("non-utf8-path");
+    let runs = RunsRoot::new(&root);
+    let store = runs.create_run().unwrap();
+    store.write_artifact(&sample_artifact()).unwrap();
+    store.write_claims(&[]).unwrap();
+    let canonical = scirust_verify_model::canonical_json(&Vec::<Check>::new()).unwrap();
+    store
+        .write_plan(
+            &[],
+            scirust_verify_model::Digest::sha256_hex(canonical.as_bytes()),
+        )
+        .unwrap();
+    let invalid_name = std::ffi::OsString::from_vec(vec![b'b', b'a', b'd', 0xff]);
+    std::fs::write(store.path().join(invalid_name), b"unrepresentable").unwrap();
+
+    assert!(matches!(store.finalize(), Err(StoreError::Corrupt { .. })));
+    assert_eq!(
+        store.read_run_document().unwrap().state,
+        RunState::Planning
+    );
 }
 
 #[test]
