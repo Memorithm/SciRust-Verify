@@ -32,6 +32,8 @@ use std::io::{self, Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
 
 #[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd as _;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 
 use scirust_verify_model::check::{Check, CheckExecution};
@@ -844,6 +846,130 @@ impl RunStore {
         budget: &mut ReadBudget,
     ) -> Result<Vec<u8>, StoreError> {
         let rel = sanitize_attachment_path(rel)?;
+
+        #[cfg(target_os = "linux")]
+        return self.read_bounded_regular_linux(&rel, budget);
+
+        #[cfg(not(target_os = "linux"))]
+        self.read_bounded_regular_portable(&rel, budget)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_bounded_regular_linux(
+        &self,
+        rel: &str,
+        budget: &mut ReadBudget,
+    ) -> Result<Vec<u8>, StoreError> {
+        let root_before = fs::symlink_metadata(&self.run_dir)
+            .map_err(|error| io_err(&self.run_dir, error))?;
+        if root_before.file_type().is_symlink() || !root_before.is_dir() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                "run root is not a real directory",
+            ));
+        }
+
+        let mut root_options = fs::OpenOptions::new();
+        root_options.read(true).custom_flags(0o600000); // O_DIRECTORY | O_NOFOLLOW
+        let mut parent = root_options
+            .open(&self.run_dir)
+            .map_err(|error| io_err(&self.run_dir, error))?;
+        let root_opened = parent
+            .metadata()
+            .map_err(|error| io_err(&self.run_dir, error))?;
+        if root_before.dev() != root_opened.dev() || root_before.ino() != root_opened.ino() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                "run root changed while it was opened",
+            ));
+        }
+
+        let components: Vec<_> = Path::new(rel).components().collect();
+        for component in &components[..components.len() - 1] {
+            let Component::Normal(name) = component else {
+                return Err(StoreError::corrupt(
+                    self.run_id.as_str(),
+                    format!("unsafe path `{rel}`"),
+                ));
+            };
+            let descriptor_path = descriptor_child_path(&parent, name);
+            let before = fs::symlink_metadata(&descriptor_path)
+                .map_err(|error| io_err(&descriptor_path, error))?;
+            if before.file_type().is_symlink() || !before.is_dir() {
+                return Err(StoreError::corrupt(
+                    self.run_id.as_str(),
+                    format!(
+                        "path component `{}` is not a real directory",
+                        name.to_string_lossy()
+                    ),
+                ));
+            }
+            let mut options = fs::OpenOptions::new();
+            options.read(true).custom_flags(0o600000); // O_DIRECTORY | O_NOFOLLOW
+            let opened = options
+                .open(&descriptor_path)
+                .map_err(|error| io_err(&descriptor_path, error))?;
+            let opened_metadata = opened
+                .metadata()
+                .map_err(|error| io_err(&descriptor_path, error))?;
+            if before.dev() != opened_metadata.dev() || before.ino() != opened_metadata.ino() {
+                return Err(StoreError::corrupt(
+                    self.run_id.as_str(),
+                    format!(
+                        "path component `{}` changed while it was opened",
+                        name.to_string_lossy()
+                    ),
+                ));
+            }
+            parent = opened;
+        }
+
+        let Component::Normal(file_name) = components[components.len() - 1] else {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("unsafe path `{rel}`"),
+            ));
+        };
+        let descriptor_path = descriptor_child_path(&parent, file_name);
+        let before = fs::symlink_metadata(&descriptor_path)
+            .map_err(|error| io_err(&descriptor_path, error))?;
+        if before.file_type().is_symlink() || !before.is_file() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("`{rel}` is not a regular file"),
+            ));
+        }
+        budget.account(self.run_id.as_str(), rel, before.len())?;
+
+        let mut options = fs::OpenOptions::new();
+        options.read(true).custom_flags(0o400000); // O_NOFOLLOW
+        let file = options
+            .open(&descriptor_path)
+            .map_err(|error| io_err(&descriptor_path, error))?;
+        let opened = file
+            .metadata()
+            .map_err(|error| io_err(&descriptor_path, error))?;
+        if !opened.is_file() || before.dev() != opened.dev() || before.ino() != opened.ino() {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("`{rel}` changed while it was opened"),
+            ));
+        }
+        read_opened_file(
+            file,
+            &descriptor_path,
+            rel,
+            before.len(),
+            self.run_id.as_str(),
+        )
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn read_bounded_regular_portable(
+        &self,
+        rel: &str,
+        budget: &mut ReadBudget,
+    ) -> Result<Vec<u8>, StoreError> {
         let path = self.run_dir.join(&rel);
         reject_symlink_components(&self.run_dir, &rel, self.run_id.as_str())?;
         let before = fs::symlink_metadata(&path).map_err(|e| io_err(&path, e))?;
@@ -857,9 +983,7 @@ impl RunStore {
 
         let mut options = fs::OpenOptions::new();
         options.read(true);
-        #[cfg(target_os = "linux")]
-        options.custom_flags(0o400000); // O_NOFOLLOW
-        let mut file = options.open(&path).map_err(|e| io_err(&path, e))?;
+        let file = options.open(&path).map_err(|e| io_err(&path, e))?;
         let opened = file.metadata().map_err(|e| io_err(&path, e))?;
         if !opened.is_file() {
             return Err(StoreError::corrupt(
@@ -867,27 +991,7 @@ impl RunStore {
                 format!("`{rel}` changed type while it was opened"),
             ));
         }
-        #[cfg(target_os = "linux")]
-        if before.dev() != opened.dev() || before.ino() != opened.ino() {
-            return Err(StoreError::corrupt(
-                self.run_id.as_str(),
-                format!("`{rel}` changed while it was opened"),
-            ));
-        }
-
-        let capacity = usize::try_from(before.len().min(1024 * 1024)).unwrap_or(1024 * 1024);
-        let mut bytes = Vec::with_capacity(capacity);
-        std::io::Read::by_ref(&mut file)
-            .take(MAX_BUNDLE_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| io_err(&path, e))?;
-        if bytes.len() as u64 != before.len() {
-            return Err(StoreError::corrupt(
-                self.run_id.as_str(),
-                format!("`{rel}` changed size while it was read"),
-            ));
-        }
-        Ok(bytes)
+        read_opened_file(file, &path, rel, before.len(), self.run_id.as_str())
     }
 
     fn collect_files(
@@ -1014,6 +1118,7 @@ fn validate_run_id(run_id: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn reject_symlink_components(root: &Path, rel: &str, run_id: &str) -> Result<(), StoreError> {
     let mut current = root.to_path_buf();
     let components: Vec<_> = Path::new(rel).components().collect();
@@ -1037,6 +1142,35 @@ fn reject_symlink_components(root: &Path, rel: &str, run_id: &str) -> Result<(),
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_child_path(parent: &fs::File, name: &std::ffi::OsStr) -> PathBuf {
+    PathBuf::from("/proc/self/fd")
+        .join(parent.as_raw_fd().to_string())
+        .join(name)
+}
+
+fn read_opened_file(
+    mut file: fs::File,
+    path: &Path,
+    rel: &str,
+    expected_len: u64,
+    run_id: &str,
+) -> Result<Vec<u8>, StoreError> {
+    let capacity = usize::try_from(expected_len.min(1024 * 1024)).unwrap_or(1024 * 1024);
+    let mut bytes = Vec::with_capacity(capacity);
+    std::io::Read::by_ref(&mut file)
+        .take(MAX_BUNDLE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_err(path, error))?;
+    if bytes.len() as u64 != expected_len {
+        return Err(StoreError::corrupt(
+            run_id,
+            format!("`{rel}` changed size while it was read"),
+        ));
+    }
+    Ok(bytes)
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
