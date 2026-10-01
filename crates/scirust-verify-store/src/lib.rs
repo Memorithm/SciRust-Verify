@@ -58,6 +58,20 @@ struct ReadBudget {
 }
 
 impl ReadBudget {
+    fn account_entry(&mut self, run_id: &str) -> Result<(), StoreError> {
+        self.files = self
+            .files
+            .checked_add(1)
+            .ok_or_else(|| StoreError::corrupt(run_id, "bundle entry counter overflowed"))?;
+        if self.files > MAX_BUNDLE_FILES {
+            return Err(StoreError::corrupt(
+                run_id,
+                format!("bundle exceeds the {MAX_BUNDLE_FILES} entry limit"),
+            ));
+        }
+        Ok(())
+    }
+
     fn account(&mut self, run_id: &str, rel: &str, size: u64) -> Result<(), StoreError> {
         if size > MAX_BUNDLE_FILE_BYTES {
             return Err(StoreError::corrupt(
@@ -67,16 +81,7 @@ impl ReadBudget {
                 ),
             ));
         }
-        self.files = self
-            .files
-            .checked_add(1)
-            .ok_or_else(|| StoreError::corrupt(run_id, "bundle file counter overflowed"))?;
-        if self.files > MAX_BUNDLE_FILES {
-            return Err(StoreError::corrupt(
-                run_id,
-                format!("bundle exceeds the {MAX_BUNDLE_FILES} file limit"),
-            ));
-        }
+        self.account_entry(run_id)?;
         self.bytes = self
             .bytes
             .checked_add(size)
@@ -575,13 +580,20 @@ impl RunStore {
                         format!("evidence entry `{}` is not a regular file", path.display()),
                     ));
                 }
-                let rel = path
+                let relative = path
                     .strip_prefix(&self.run_dir)
                     .map_err(|_| {
                         StoreError::corrupt(self.run_id.as_str(), "evidence path escaped run")
+                    })?;
+                let rel = relative
+                    .to_str()
+                    .ok_or_else(|| {
+                        StoreError::corrupt(
+                            self.run_id.as_str(),
+                            format!("evidence path `{}` is not valid UTF-8", relative.display()),
+                        )
                     })?
-                    .to_string_lossy()
-                    .into_owned();
+                    .to_owned();
                 let bytes = self.read_bounded_regular(&rel, &mut budget)?;
                 let ev: Evidence =
                     serde_json::from_slice(&bytes).map_err(|e| StoreError::Serde {
@@ -589,6 +601,8 @@ impl RunStore {
                         source: e,
                     })?;
                 out.push(ev);
+            } else {
+                budget.account_entry(self.run_id.as_str())?;
             }
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -654,16 +668,29 @@ impl RunStore {
         }
 
         // Attachment existence + integrity.
+        let mut validated_attachments: BTreeMap<String, (u64, String)> = BTreeMap::new();
+        let mut attachment_budget = ReadBudget::default();
         for ev in &evidence {
             for att in &ev.attachments {
                 let rel = sanitize_attachment_path(&att.path)?;
-                let mut budget = ReadBudget::default();
-                let bytes = self.read_bounded_regular(&rel, &mut budget).map_err(|_| {
-                    StoreError::corrupt(
-                        self.run_id.as_str(),
-                        format!("referenced attachment `{}` is missing", att.path),
-                    )
-                })?;
+                let expected = (att.size_bytes, att.digest.to_string());
+                if let Some(previous) = validated_attachments.get(&rel) {
+                    if previous != &expected {
+                        return Err(StoreError::corrupt(
+                            self.run_id.as_str(),
+                            format!("attachment `{}` has conflicting metadata", att.path),
+                        ));
+                    }
+                    continue;
+                }
+                let bytes = self
+                    .read_bounded_regular(&rel, &mut attachment_budget)
+                    .map_err(|_| {
+                        StoreError::corrupt(
+                            self.run_id.as_str(),
+                            format!("referenced attachment `{}` is missing", att.path),
+                        )
+                    })?;
                 if bytes.len() as u64 != att.size_bytes {
                     return Err(StoreError::corrupt(
                         self.run_id.as_str(),
@@ -677,6 +704,7 @@ impl RunStore {
                         format!("attachment `{}` digest mismatch", att.path),
                     ));
                 }
+                validated_attachments.insert(rel, expected);
             }
         }
 
@@ -730,20 +758,35 @@ impl RunStore {
             }
         }
 
-        // Seal: mark finalized first (nothing is sealed yet), then digest
-        // every file including the final run.json, then write bundle.json
-        // last so the manifest covers the complete frozen content.
-        self.set_state(RunState::Finalized)?;
+        // Traverse and enforce all shape/size limits before making the state
+        // transition irreversible. The state change only alters run.json, so
+        // replace that one digest after the transition.
         let mut files = BTreeMap::new();
         let mut budget = ReadBudget::default();
         self.collect_files(&self.run_dir, 0, &mut budget, &mut files)?;
+        self.set_state(RunState::Finalized)?;
+        let mut run_budget = ReadBudget::default();
+        let finalized_run = match self.read_bounded_regular("run.json", &mut run_budget) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.write_json("run.json", &run_doc)?;
+                return Err(error);
+            }
+        };
+        files.insert(
+            "run.json".to_owned(),
+            Digest::sha256_hex(&finalized_run).value,
+        );
         let manifest = BundleManifest {
             schema_version: SCHEMA_VERSION,
             algorithm: "sha256".to_owned(),
             sealed_by: TOOL_IDENTITY.to_owned(),
             files,
         };
-        self.write_json("bundle.json", &manifest)?;
+        if let Err(error) = self.write_json("bundle.json", &manifest) {
+            self.write_json("run.json", &run_doc)?;
+            return Err(error);
+        }
         Ok(manifest)
     }
 
@@ -1019,14 +1062,22 @@ impl RunStore {
                 ));
             }
             if file_type.is_dir() {
+                budget.account_entry(self.run_id.as_str())?;
                 self.collect_files(&path, depth + 1, budget, out)?;
             } else if file_type.is_file() {
-                let rel = path
+                let relative = path
                     .strip_prefix(&self.run_dir)
                     .map_err(|_| {
                         StoreError::corrupt(self.run_id.as_str(), "bundle path escaped run")
+                    })?;
+                let rel = relative
+                    .to_str()
+                    .ok_or_else(|| {
+                        StoreError::corrupt(
+                            self.run_id.as_str(),
+                            format!("bundle path `{}` is not valid UTF-8", relative.display()),
+                        )
                     })?
-                    .to_string_lossy()
                     .replace('\\', "/");
                 if rel == "bundle.json" {
                     continue;
