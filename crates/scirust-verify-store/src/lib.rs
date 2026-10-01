@@ -1164,6 +1164,12 @@ impl RunStore {
         }
         let entries = fs::read_dir(dir).map_err(|e| io_err(dir, e))?;
         for entry in entries {
+            if depth >= MAX_BUNDLE_DEPTH {
+                return Err(StoreError::corrupt(
+                    self.run_id.as_str(),
+                    format!("bundle exceeds the {MAX_BUNDLE_DEPTH} component-depth limit"),
+                ));
+            }
             let entry = entry.map_err(|e| io_err(dir, e))?;
             let path = entry.path();
             let file_type = entry.file_type().map_err(|e| io_err(&path, e))?;
@@ -1380,13 +1386,22 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         {
             let mut options = fs::OpenOptions::new();
             options.read(true).custom_flags(0o400000); // O_NOFOLLOW
-            let published = options.open(path)?;
+            let mut published = options.open(path)?;
             let published_metadata = published.metadata()?;
             if written.dev() != published_metadata.dev()
                 || written.ino() != published_metadata.ino()
             {
                 return Err(io::Error::other(
                     "atomic-write temporary was replaced before publication",
+                ));
+            }
+            let mut published_bytes = Vec::with_capacity(bytes.len());
+            std::io::Read::by_ref(&mut published)
+                .take((bytes.len() as u64).saturating_add(1))
+                .read_to_end(&mut published_bytes)?;
+            if published_bytes != bytes {
+                return Err(io::Error::other(
+                    "atomic-write contents changed before publication completed",
                 ));
             }
             drop(file);
