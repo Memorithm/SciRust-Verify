@@ -65,18 +65,20 @@ impl ReadBudget {
                 ),
             ));
         }
-        self.files = self.files.checked_add(1).ok_or_else(|| {
-            StoreError::corrupt(run_id, "bundle file counter overflowed")
-        })?;
+        self.files = self
+            .files
+            .checked_add(1)
+            .ok_or_else(|| StoreError::corrupt(run_id, "bundle file counter overflowed"))?;
         if self.files > MAX_BUNDLE_FILES {
             return Err(StoreError::corrupt(
                 run_id,
                 format!("bundle exceeds the {MAX_BUNDLE_FILES} file limit"),
             ));
         }
-        self.bytes = self.bytes.checked_add(size).ok_or_else(|| {
-            StoreError::corrupt(run_id, "bundle byte counter overflowed")
-        })?;
+        self.bytes = self
+            .bytes
+            .checked_add(size)
+            .ok_or_else(|| StoreError::corrupt(run_id, "bundle byte counter overflowed"))?;
         if self.bytes > MAX_BUNDLE_BYTES {
             return Err(StoreError::corrupt(
                 run_id,
@@ -284,8 +286,8 @@ impl RunsRoot {
     pub fn open(&self, run_id: &str) -> Result<RunStore, StoreError> {
         validate_run_id(run_id)?;
         let run_dir = self.0.join(run_id);
-        let metadata = fs::symlink_metadata(&run_dir)
-            .map_err(|_| StoreError::NotFound(run_id.to_owned()))?;
+        let metadata =
+            fs::symlink_metadata(&run_dir).map_err(|_| StoreError::NotFound(run_id.to_owned()))?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Err(StoreError::corrupt(
                 run_id,
@@ -573,7 +575,9 @@ impl RunStore {
                 }
                 let rel = path
                     .strip_prefix(&self.run_dir)
-                    .map_err(|_| StoreError::corrupt(self.run_id.as_str(), "evidence path escaped run"))?
+                    .map_err(|_| {
+                        StoreError::corrupt(self.run_id.as_str(), "evidence path escaped run")
+                    })?
                     .to_string_lossy()
                     .into_owned();
                 let bytes = self.read_bounded_regular(&rel, &mut budget)?;
@@ -604,12 +608,8 @@ impl RunStore {
         let path = self.run_dir.join(&rel);
         let mut budget = ReadBudget::default();
         let bytes = self.read_bounded_regular(&rel, &mut budget)?;
-        String::from_utf8(bytes).map_err(|error| {
-            io_err(
-                path,
-                io::Error::new(io::ErrorKind::InvalidData, error),
-            )
-        })
+        String::from_utf8(bytes)
+            .map_err(|error| io_err(path, io::Error::new(io::ErrorKind::InvalidData, error)))
     }
 
     /// Validates dossier structure and seals it with `bundle.json`.
@@ -771,12 +771,14 @@ impl RunStore {
                     "manifest must not seal itself",
                 ));
             }
-            let bytes = self.read_bounded_regular(&safe_rel, &mut sealed_budget).map_err(|_| {
-                StoreError::corrupt(
-                    self.run_id.as_str(),
-                    format!("sealed file `{rel}` is missing"),
-                )
-            })?;
+            let bytes = self
+                .read_bounded_regular(&safe_rel, &mut sealed_budget)
+                .map_err(|_| {
+                    StoreError::corrupt(
+                        self.run_id.as_str(),
+                        format!("sealed file `{rel}` is missing"),
+                    )
+                })?;
             let actual = Digest::sha256_hex(&bytes);
             if &actual.value != expected_hex {
                 return Err(StoreError::corrupt(
@@ -917,7 +919,9 @@ impl RunStore {
             } else if file_type.is_file() {
                 let rel = path
                     .strip_prefix(&self.run_dir)
-                    .map_err(|_| StoreError::corrupt(self.run_id.as_str(), "bundle path escaped run"))?
+                    .map_err(|_| {
+                        StoreError::corrupt(self.run_id.as_str(), "bundle path escaped run")
+                    })?
                     .to_string_lossy()
                     .replace('\\', "/");
                 if rel == "bundle.json" {
@@ -928,7 +932,10 @@ impl RunStore {
             } else {
                 return Err(StoreError::corrupt(
                     self.run_id.as_str(),
-                    format!("special file `{}` is not allowed in a bundle", path.display()),
+                    format!(
+                        "special file `{}` is not allowed in a bundle",
+                        path.display()
+                    ),
                 ));
             }
         }
@@ -995,7 +1002,9 @@ fn validate_run_id(run_id: &str) -> Result<(), StoreError> {
         && bytes[13..19].iter().all(u8::is_ascii_digit)
         && bytes[19] == b'Z'
         && bytes[20] == b'-'
-        && bytes[21..].iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte));
+        && bytes[21..]
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte));
     if !valid {
         return Err(StoreError::corrupt(
             run_id,
