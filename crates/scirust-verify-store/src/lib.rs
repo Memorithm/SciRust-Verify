@@ -1382,7 +1382,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             options.read(true).custom_flags(0o400000); // O_NOFOLLOW
             let published = options.open(path)?;
             let published_metadata = published.metadata()?;
-            if written.dev() != published_metadata.dev() || written.ino() != published_metadata.ino()
+            if written.dev() != published_metadata.dev()
+                || written.ino() != published_metadata.ino()
             {
                 return Err(io::Error::other(
                     "atomic-write temporary was replaced before publication",
