@@ -781,15 +781,12 @@ impl RunStore {
                 "bundle changed during finalization validation",
             ));
         }
-        self.set_state(RunState::Finalized)?;
-        let mut run_budget = ReadBudget::default();
-        let finalized_run = match self.read_bounded_regular("run.json", &mut run_budget) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                self.write_json("run.json", &run_doc)?;
-                return Err(error);
-            }
-        };
+        let mut finalized_doc = run_doc.clone();
+        finalized_doc.state = RunState::Finalized;
+        finalized_doc.finalized_at_utc = Some(chrono_now());
+        let run_path = self.run_dir.join("run.json");
+        let finalized_run = serialize_json_document(&run_path, &finalized_doc)?;
+        self.write_json("run.json", &finalized_doc)?;
         files.insert(
             "run.json".to_owned(),
             Digest::sha256_hex(&finalized_run).value,
@@ -873,11 +870,7 @@ impl RunStore {
         if self.is_sealed(rel)? {
             return Err(StoreError::Frozen(self.run_id.clone()));
         }
-        let mut bytes = serde_json::to_vec_pretty(value).map_err(|e| StoreError::Serde {
-            path: path.clone(),
-            source: e,
-        })?;
-        bytes.extend_from_slice(b"\n");
+        let bytes = serialize_json_document(&path, value)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| io_err(&path, e))?;
         }
@@ -1254,6 +1247,15 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         f.sync_all()?;
     }
     fs::rename(&tmp, path)
+}
+
+fn serialize_json_document<T: Serialize>(path: &Path, value: &T) -> Result<Vec<u8>, StoreError> {
+    let mut bytes = serde_json::to_vec_pretty(value).map_err(|source| StoreError::Serde {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    bytes.extend_from_slice(b"\n");
+    Ok(bytes)
 }
 
 fn chrono_now() -> String {
