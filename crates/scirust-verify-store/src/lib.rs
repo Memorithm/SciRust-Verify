@@ -65,7 +65,11 @@ mod linux_openat {
     }
 
     pub(super) fn open_directory(parent: &File, name: &OsStr) -> io::Result<File> {
-        open(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        open(
+            parent,
+            name,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC,
+        )
     }
 
     pub(super) fn open_file(parent: &File, name: &OsStr) -> io::Result<File> {
@@ -1111,13 +1115,7 @@ impl RunStore {
             ));
         }
         budget.account(self.run_id.as_str(), rel, opened.len())?;
-        read_opened_file(
-            file,
-            &display_path,
-            rel,
-            opened.len(),
-            self.run_id.as_str(),
-        )
+        read_opened_file(file, &display_path, rel, opened.len(), self.run_id.as_str())
     }
 
     #[cfg(not(target_os = "linux"))]
