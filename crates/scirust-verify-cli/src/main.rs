@@ -30,7 +30,7 @@ use std::os::unix::fs::OpenOptionsExt as _;
 #[cfg(target_os = "linux")]
 use nix::fcntl::{AtFlags, AT_FDCWD};
 #[cfg(target_os = "linux")]
-use nix::unistd::{linkat, unlinkat, UnlinkatFlags};
+use nix::unistd::linkat;
 
 use clap::{Parser, Subcommand};
 use scirust_verify_cargo::CargoProvider;
@@ -131,9 +131,6 @@ enum Command {
         /// Detached envelope path (defaults outside the sealed run).
         #[arg(long)]
         output: Option<PathBuf>,
-        /// Replace an existing regular envelope file.
-        #[arg(long)]
-        force: bool,
     },
     /// Verify integrity and detached authorship against an external trust root.
     Authenticate {
@@ -220,8 +217,7 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             principal,
             identity,
             output,
-            force,
-        } => attest(&run, &principal, &identity, output, force, cli.json),
+        } => attest(&run, &principal, &identity, output, cli.json),
         Command::Authenticate {
             run,
             envelope,
@@ -894,7 +890,6 @@ fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
 fn write_attestation(
     output: &PreparedAttestationOutput,
     bytes: &[u8],
-    force: bool,
 ) -> Result<(), CliError> {
     let path = descriptor_path(&output.parent).join(&output.file_name);
     if let Ok(metadata) = fs::symlink_metadata(&path) {
@@ -904,12 +899,10 @@ fn write_attestation(
                 output.display_path.display()
             )));
         }
-        if !force {
-            return Err(CliError::usage(format!(
-                "attestation output `{}` already exists; pass --force to replace it",
-                output.display_path.display()
-            )));
-        }
+        return Err(CliError::usage(format!(
+            "attestation output `{}` already exists; rotate it explicitly before publishing a new envelope",
+            output.display_path.display()
+        )));
     }
 
     // Keep the complete envelope in an unnamed inode until publication. A
@@ -934,26 +927,6 @@ fn write_attestation(
         CliError::infrastructure(format!("cannot inspect temporary attestation: {error}"))
     })?;
 
-    if force {
-        // Removing first preserves the unnamed-inode guarantee: the new inode
-        // is linked directly at the destination and is never exposed through a
-        // staging pathname. A racing creator makes linkat fail closed.
-        match unlinkat(
-            &output.parent,
-            output.file_name.as_os_str(),
-            UnlinkatFlags::NoRemoveDir,
-        ) {
-            Ok(()) => {}
-            Err(nix::errno::Errno::ENOENT) => {}
-            Err(error) => {
-                return Err(CliError::infrastructure(format!(
-                    "cannot replace attestation `{}`: {error}",
-                    output.display_path.display()
-                )));
-            }
-        }
-    }
-
     let source_path = descriptor_path(&file);
     if let Err(error) = linkat(
         AT_FDCWD,
@@ -962,22 +935,16 @@ fn write_attestation(
         output.file_name.as_os_str(),
         AtFlags::AT_SYMLINK_FOLLOW,
     ) {
-        let message = if error == nix::errno::Errno::EEXIST && !force {
-            format!(
-                "attestation output `{}` already exists; pass --force to replace it",
+        if error == nix::errno::Errno::EEXIST {
+            return Err(CliError::usage(format!(
+                "attestation output `{}` already exists; rotate it explicitly before publishing a new envelope",
                 output.display_path.display()
-            )
-        } else {
-            format!(
-                "cannot publish attestation `{}`: {error}",
-                output.display_path.display()
-            )
-        };
-        return Err(if error == nix::errno::Errno::EEXIST && !force {
-            CliError::usage(message)
-        } else {
-            CliError::infrastructure(message)
-        });
+            )));
+        }
+        return Err(CliError::infrastructure(format!(
+            "cannot publish attestation `{}`: {error}",
+            output.display_path.display()
+        )));
     }
 
     let published_metadata = fs::symlink_metadata(&path).map_err(|error| {
@@ -1007,7 +974,6 @@ fn write_attestation(
 fn write_attestation(
     output: &PreparedAttestationOutput,
     _bytes: &[u8],
-    _force: bool,
 ) -> Result<(), CliError> {
     Err(CliError::usage(format!(
         "attestation publication for `{}` is supported only on Linux",
@@ -1020,7 +986,6 @@ fn attest(
     principal: &str,
     identity: &Path,
     output: Option<PathBuf>,
-    force: bool,
     json: bool,
 ) -> Result<ExitCode, CliError> {
     if principal.trim().is_empty() || principal.chars().any(char::is_whitespace) {
@@ -1105,7 +1070,7 @@ fn attest(
     let mut bytes = serde_json::to_vec_pretty(&envelope)
         .map_err(|error| CliError::infrastructure(error.to_string()))?;
     bytes.push(b'\n');
-    write_attestation(&output, &bytes, force)?;
+    write_attestation(&output, &bytes)?;
 
     if json {
         println!(
