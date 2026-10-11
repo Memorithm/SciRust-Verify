@@ -887,10 +887,7 @@ fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
 }
 
 #[cfg(target_os = "linux")]
-fn write_attestation(
-    output: &PreparedAttestationOutput,
-    bytes: &[u8],
-) -> Result<(), CliError> {
+fn write_attestation(output: &PreparedAttestationOutput, bytes: &[u8]) -> Result<(), CliError> {
     let path = descriptor_path(&output.parent).join(&output.file_name);
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -971,10 +968,7 @@ fn write_attestation(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn write_attestation(
-    output: &PreparedAttestationOutput,
-    _bytes: &[u8],
-) -> Result<(), CliError> {
+fn write_attestation(output: &PreparedAttestationOutput, _bytes: &[u8]) -> Result<(), CliError> {
     Err(CliError::usage(format!(
         "attestation publication for `{}` is supported only on Linux",
         output.display_path.display()
