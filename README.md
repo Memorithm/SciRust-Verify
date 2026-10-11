@@ -92,9 +92,10 @@ scirust-verify attest <run-id> \
   --principal ci@example.test \
   --identity /secure/path/signing-key
 
-# Publication is intentionally Linux-only: Linux keeps the checked output
-# directory pinned by descriptor until atomic publication. Other platforms
-# fail closed; authentication remains portable.
+# Detached publication and authentication are intentionally Linux-only:
+# checked output directories and allowed-signers files remain pinned by
+# descriptors. Other platforms fail closed before using a signing key or
+# trust root.
 
 # 7. Authenticate it against an independently managed trust root.
 scirust-verify authenticate <run-id> \
