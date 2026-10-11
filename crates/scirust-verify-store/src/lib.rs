@@ -979,12 +979,11 @@ impl RunStore {
         let manifest_path = self.run_dir.join("bundle.json");
         let mut manifest_budget = ReadBudget::default();
         let manifest_bytes = self.read_bounded_regular("bundle.json", &mut manifest_budget)?;
-        let manifest: BundleManifest = serde_json::from_slice(&manifest_bytes).map_err(|source| {
-            StoreError::Serde {
+        let manifest: BundleManifest =
+            serde_json::from_slice(&manifest_bytes).map_err(|source| StoreError::Serde {
                 path: manifest_path,
                 source,
-            }
-        })?;
+            })?;
         if manifest.files.len() > MAX_BUNDLE_FILES {
             return Err(StoreError::corrupt(
                 self.run_id.as_str(),
