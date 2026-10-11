@@ -783,7 +783,27 @@ fn attest(
     } else {
         current_dir().join(output)
     };
-    if output.starts_with(&run_dir) {
+    let output_parent = output
+        .parent()
+        .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
+    fs::create_dir_all(output_parent).map_err(|error| {
+        CliError::infrastructure(format!(
+            "cannot create attestation directory `{}`: {error}",
+            output_parent.display()
+        ))
+    })?;
+    let canonical_output_parent = output_parent.canonicalize().map_err(|error| {
+        CliError::infrastructure(format!(
+            "cannot resolve attestation directory `{}`: {error}",
+            output_parent.display()
+        ))
+    })?;
+    let canonical_run_dir = run_dir
+        .canonicalize()
+        .map_err(|error| CliError::infrastructure(error.to_string()))?;
+    if output.starts_with(&run_dir)
+        || canonical_output_parent.starts_with(&canonical_run_dir)
+    {
         return Err(CliError::usage(
             "detached attestations must be stored outside the sealed run directory",
         ));
