@@ -87,16 +87,26 @@ scirust-verify report <run-id> --check-integrity
 scirust-verify report <run-id> --markdown
 scirust-verify report <run-id> --json
 
-# 6. Re-execute a previous run as a NEW linked run.
+# 6. Publish a detached OpenSSH authorship envelope.
+scirust-verify attest <run-id> \
+  --principal ci@example.test \
+  --identity /secure/path/signing-key
+
+# 7. Authenticate it against an independently managed trust root.
+scirust-verify authenticate <run-id> \
+  --envelope .scirust-verify/attestations/<run-id>.json \
+  --allowed-signers /etc/scirust-verify/allowed_signers
+
+# 8. Re-execute a previous run as a NEW linked run.
 scirust-verify replay <run-id>
 
-# 7. Compare two dossiers.
+# 9. Compare two dossiers.
 scirust-verify diff <run-a> <run-b>
 
-# 8. Probe the environment.
+# 10. Probe the environment.
 scirust-verify doctor
 
-# 9. Persisted document catalog.
+# 11. Persisted document catalog.
 scirust-verify schema
 ```
 
@@ -124,8 +134,11 @@ manifests) · `3` internal error.
 ```
 
 Finalized bundles are sealed: every file's SHA-256 is recorded in
-`bundle.json`; readers detect modification, deletion and injection. See
-[EVIDENCE_FORMAT](docs/EVIDENCE_FORMAT.md).
+`bundle.json`; readers detect modification, deletion and injection. Optional
+detached OpenSSH signatures can authenticate the exact bundle manifest against
+an independently configured `allowed_signers` file. Integrity, authenticity
+and qualification remain separate: signing never re-executes evidence or
+upgrades an imported claim. See [EVIDENCE_FORMAT](docs/EVIDENCE_FORMAT.md).
 
 ## How verdicts work
 
