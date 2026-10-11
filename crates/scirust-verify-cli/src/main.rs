@@ -1059,7 +1059,6 @@ fn attest(
         .map_err(|error| CliError::infrastructure(error.to_string()))?;
     bytes.push(b'\n');
     write_attestation(&output, &bytes, force)?;
-    let _ = fs::remove_dir_all(&temporary);
 
     if json {
         println!(
