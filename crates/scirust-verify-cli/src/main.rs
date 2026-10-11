@@ -938,9 +938,7 @@ fn write_attestation(
         // Removing first preserves the unnamed-inode guarantee: the new inode
         // is linked directly at the destination and is never exposed through a
         // staging pathname. A racing creator makes linkat fail closed.
-        let removed = unsafe {
-            nix::libc::unlinkat(output.parent.as_raw_fd(), target.as_ptr(), 0)
-        };
+        let removed = unsafe { nix::libc::unlinkat(output.parent.as_raw_fd(), target.as_ptr(), 0) };
         if removed != 0 {
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::NotFound {
