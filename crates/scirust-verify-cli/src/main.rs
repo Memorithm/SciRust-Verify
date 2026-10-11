@@ -10,12 +10,18 @@
 
 #![deny(missing_docs)]
 
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::io;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd as _;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::OpenOptionsExt as _;
 
@@ -736,6 +742,155 @@ fn read_attestation_envelope(path: &Path) -> Result<Vec<u8>, CliError> {
     Ok(bytes)
 }
 
+struct PreparedAttestationOutput {
+    display_path: PathBuf,
+    #[cfg(target_os = "linux")]
+    parent: fs::File,
+    #[cfg(target_os = "linux")]
+    file_name: OsString,
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_path(file: &fs::File) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
+}
+
+#[cfg(target_os = "linux")]
+fn open_directory(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true).custom_flags(0o600000); // O_DIRECTORY | O_NOFOLLOW
+    options.open(path)
+}
+
+fn validate_normal_output_path(output: &Path) -> Result<(), CliError> {
+    if output.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        )
+    }) {
+        return Err(CliError::usage(
+            "attestation output must be an absolute, normalized path without dot components",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_attestation_output(
+    output: PathBuf,
+    runs_root: &Path,
+) -> Result<PreparedAttestationOutput, CliError> {
+    validate_normal_output_path(&output)?;
+    let file_name = output
+        .file_name()
+        .ok_or_else(|| CliError::usage("attestation output has no file name"))?
+        .to_owned();
+    let parent = output
+        .parent()
+        .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
+    let canonical_runs_root = runs_root
+        .canonicalize()
+        .map_err(|error| CliError::infrastructure(error.to_string()))?;
+
+    let parent_handle = match open_directory(parent) {
+        Ok(handle) => handle,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let parent_name = parent
+                .file_name()
+                .ok_or_else(|| CliError::usage("attestation parent has no directory name"))?;
+            let existing_parent = parent
+                .parent()
+                .ok_or_else(|| CliError::usage("attestation parent has no existing ancestor"))?;
+            let existing_handle = open_directory(existing_parent).map_err(|open_error| {
+                CliError::usage(format!(
+                    "attestation parent `{}` must already exist: {open_error}",
+                    existing_parent.display()
+                ))
+            })?;
+            let anchored_existing = descriptor_path(&existing_handle);
+            let canonical_existing = anchored_existing
+                .canonicalize()
+                .map_err(|canonical_error| CliError::infrastructure(canonical_error.to_string()))?;
+            if canonical_existing.starts_with(&canonical_runs_root) {
+                return Err(CliError::usage(
+                    "detached attestations must be stored outside every sealed run directory",
+                ));
+            }
+            let anchored_parent = anchored_existing.join(parent_name);
+            match fs::create_dir(&anchored_parent) {
+                Ok(()) => {}
+                Err(create_error) if create_error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(create_error) => {
+                    return Err(CliError::infrastructure(format!(
+                        "cannot create attestation directory `{}`: {create_error}",
+                        parent.display()
+                    )));
+                }
+            }
+            open_directory(&anchored_parent).map_err(|open_error| {
+                CliError::infrastructure(format!(
+                    "cannot pin attestation directory `{}`: {open_error}",
+                    parent.display()
+                ))
+            })?
+        }
+        Err(error) => {
+            return Err(CliError::usage(format!(
+                "cannot open attestation directory `{}`: {error}",
+                parent.display()
+            )));
+        }
+    };
+
+    let canonical_parent = descriptor_path(&parent_handle)
+        .canonicalize()
+        .map_err(|error| CliError::infrastructure(error.to_string()))?;
+    if canonical_parent.starts_with(&canonical_runs_root) {
+        return Err(CliError::usage(
+            "detached attestations must be stored outside every sealed run directory",
+        ));
+    }
+    Ok(PreparedAttestationOutput {
+        display_path: output,
+        parent: parent_handle,
+        file_name,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prepare_attestation_output(
+    output: PathBuf,
+    runs_root: &Path,
+) -> Result<PreparedAttestationOutput, CliError> {
+    validate_normal_output_path(&output)?;
+    let parent = output
+        .parent()
+        .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
+    let canonical_runs_root = runs_root
+        .canonicalize()
+        .map_err(|error| CliError::infrastructure(error.to_string()))?;
+    if !parent.exists() {
+        fs::create_dir(parent).map_err(|error| {
+            CliError::infrastructure(format!(
+                "cannot create attestation directory `{}`: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|error| CliError::infrastructure(error.to_string()))?;
+    if canonical_parent.starts_with(&canonical_runs_root) {
+        return Err(CliError::usage(
+            "detached attestations must be stored outside every sealed run directory",
+        ));
+    }
+    Ok(PreparedAttestationOutput {
+        display_path: output,
+    })
+}
+
 fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -751,18 +906,27 @@ fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
     Ok(path)
 }
 
-fn write_attestation(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliError> {
-    if let Ok(metadata) = fs::symlink_metadata(path) {
+fn write_attestation(
+    output: &PreparedAttestationOutput,
+    bytes: &[u8],
+    force: bool,
+) -> Result<(), CliError> {
+    #[cfg(target_os = "linux")]
+    let path = descriptor_path(&output.parent).join(&output.file_name);
+    #[cfg(not(target_os = "linux"))]
+    let path = output.display_path.clone();
+
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(CliError::usage(format!(
                 "attestation output `{}` is not a regular file",
-                path.display()
+                output.display_path.display()
             )));
         }
         if !force {
             return Err(CliError::usage(format!(
                 "attestation output `{}` already exists; pass --force to replace it",
-                path.display()
+                output.display_path.display()
             )));
         }
     }
@@ -790,11 +954,16 @@ fn write_attestation(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliEr
             CliError::infrastructure(format!("cannot persist attestation: {error}"))
         })?;
     drop(file);
-    fs::rename(&temporary, path).map_err(|error| {
+    let publish = if force {
+        fs::rename(&temporary, &path)
+    } else {
+        fs::hard_link(&temporary, &path).and_then(|_| fs::remove_file(&temporary))
+    };
+    publish.map_err(|error| {
         let _ = fs::remove_file(&temporary);
         CliError::infrastructure(format!(
             "cannot publish attestation `{}`: {error}",
-            path.display()
+            output.display_path.display()
         ))
     })
 }
@@ -817,70 +986,17 @@ fn attest(
         .verify_integrity_snapshot()
         .map_err(|error| CliError::not_found(format!("integrity verification failed: {error}")))?;
     let runs_root = root.join(".scirust-verify").join("runs");
-    let output = output.unwrap_or_else(|| {
+    let output_path = output.unwrap_or_else(|| {
         root.join(".scirust-verify")
             .join("attestations")
             .join(format!("{run}.json"))
     });
-    let output = if output.is_absolute() {
-        output
+    let output_path = if output_path.is_absolute() {
+        output_path
     } else {
-        current_dir().join(output)
+        current_dir().join(output_path)
     };
-    if output.components().any(|component| {
-        matches!(
-            component,
-            std::path::Component::CurDir | std::path::Component::ParentDir
-        )
-    }) {
-        return Err(CliError::usage(
-            "attestation output must be an absolute, normalized path without dot components",
-        ));
-    }
-    let output_parent = output
-        .parent()
-        .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
-    let canonical_runs_root = runs_root
-        .canonicalize()
-        .map_err(|error| CliError::infrastructure(error.to_string()))?;
-    if output.starts_with(&runs_root) {
-        return Err(CliError::usage(
-            "detached attestations must be stored outside the sealed run directory",
-        ));
-    }
-    if !output_parent.exists() {
-        let existing_parent = output_parent
-            .parent()
-            .ok_or_else(|| CliError::usage("attestation output parent has no existing ancestor"))?;
-        let canonical_existing_parent = existing_parent.canonicalize().map_err(|error| {
-            CliError::usage(format!(
-                "attestation output parent `{}` must already exist: {error}",
-                existing_parent.display()
-            ))
-        })?;
-        if canonical_existing_parent.starts_with(&canonical_runs_root) {
-            return Err(CliError::usage(
-                "detached attestations must be stored outside the sealed run directory",
-            ));
-        }
-        fs::create_dir(output_parent).map_err(|error| {
-            CliError::infrastructure(format!(
-                "cannot create attestation directory `{}`: {error}",
-                output_parent.display()
-            ))
-        })?;
-    }
-    let canonical_output_parent = output_parent.canonicalize().map_err(|error| {
-        CliError::infrastructure(format!(
-            "cannot resolve attestation directory `{}`: {error}",
-            output_parent.display()
-        ))
-    })?;
-    if canonical_output_parent.starts_with(&canonical_runs_root) {
-        return Err(CliError::usage(
-            "detached attestations must be stored outside the sealed run directory",
-        ));
-    }
+    let output = prepare_attestation_output(output_path, &runs_root)?;
     let identity = identity.canonicalize().map_err(|error| {
         CliError::usage(format!(
             "cannot resolve signing identity `{}`: {error}",
@@ -888,33 +1004,37 @@ fn attest(
         ))
     })?;
 
-    let temporary = attestation_temp_dir("sign")?;
-    let payload = temporary.join("attestation.payload");
     let signed_payload = signed_attestation_payload(principal, &bundle);
-    fs::write(&payload, &signed_payload).map_err(|error| {
-        CliError::infrastructure(format!("cannot stage bundle for signing: {error}"))
-    })?;
-    let sign = ProcessCommand::new("ssh-keygen")
+    let mut child = ProcessCommand::new("ssh-keygen")
         .arg("-Y")
         .arg("sign")
         .arg("-f")
         .arg(&identity)
         .arg("-n")
         .arg(SSHSIG_NAMESPACE)
-        .arg(&payload)
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| CliError::infrastructure(format!("cannot execute ssh-keygen: {error}")))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| CliError::infrastructure("ssh-keygen stdin unavailable"))?
+        .write_all(&signed_payload)
+        .map_err(|error| CliError::infrastructure(format!("cannot feed signed payload: {error}")))?;
+    let sign = child
+        .wait_with_output()
+        .map_err(|error| CliError::infrastructure(format!("cannot wait for ssh-keygen: {error}")))?;
     if !sign.status.success() {
-        let _ = fs::remove_dir_all(&temporary);
         return Err(CliError::infrastructure(format!(
             "ssh-keygen refused to sign the bundle: {}",
             String::from_utf8_lossy(&sign.stderr).trim()
         )));
     }
-    let signature_path = payload.with_extension("payload.sig");
-    let signature = fs::read_to_string(&signature_path).map_err(|error| {
+    let signature = String::from_utf8(sign.stdout).map_err(|error| {
         CliError::infrastructure(format!(
-            "ssh-keygen did not publish a readable signature: {error}"
+            "ssh-keygen did not publish a UTF-8 signature: {error}"
         ))
     })?;
     let bundle_digest = Digest::sha256_hex(&bundle).value;
@@ -944,7 +1064,7 @@ fn attest(
             "{}",
             serde_json::json!({
                 "run_id": run,
-                "attestation": output,
+                "attestation": &output.display_path,
                 "bundle_sha256": bundle_digest,
                 "principal": principal,
                 "integrity": {"status": "verified", "sealed_files": sealed_files},
@@ -953,7 +1073,10 @@ fn attest(
             })
         );
     } else {
-        println!("published detached attestation: {}", output.display());
+        println!(
+            "published detached attestation: {}",
+            output.display_path.display()
+        );
         println!("integrity: verified ({sealed_files} sealed files)");
         println!(
             "authenticity: unevaluated until checked against an external allowed-signers file"
