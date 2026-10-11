@@ -542,7 +542,9 @@ fn detached_authorship_uses_an_independent_trust_root() {
     let result: serde_json::Value =
         serde_json::from_slice(&authenticated.stdout).expect("authentication JSON");
     assert_eq!(
-        result.pointer("/integrity/status").and_then(|value| value.as_str()),
+        result
+            .pointer("/integrity/status")
+            .and_then(|value| value.as_str()),
         Some("verified")
     );
     assert_eq!(
@@ -596,9 +598,7 @@ fn detached_authorship_uses_an_independent_trust_root() {
         .output()
         .unwrap();
     assert_eq!(non_independent.status.code(), Some(2));
-    assert!(
-        String::from_utf8_lossy(&non_independent.stderr).contains("configured independently")
-    );
+    assert!(String::from_utf8_lossy(&non_independent.stderr).contains("configured independently"));
 }
 
 #[test]
