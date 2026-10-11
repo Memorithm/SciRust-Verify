@@ -10,7 +10,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
 - Add detached OpenSSH SSHSIG authorship envelopes over exact integrity-checked
   bundle manifests, require an independently configured `allowed_signers`
   root, and report integrity/authenticity/qualification as separate states
-  without upgrading imported evidence (MEM-19).
+  without upgrading imported evidence; Linux descriptor pinning protects
+  no-clobber publication and trust-root verification, while other platforms
+  fail closed for these detached operations (MEM-19).
 - Run Unix checks in dedicated process groups, clean descendants after timeout
   or parent exit, confirm group termination, and fail closed when bounded
   stdout/stderr drainage cannot complete independently (MEM-16).
