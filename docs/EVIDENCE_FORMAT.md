@@ -155,7 +155,9 @@ those exact manifest bytes. `scirust-verify authenticate` verifies integrity,
 recomputes the manifest digest, and asks `ssh-keygen -Y verify` to authorize
 the principal against an `allowed_signers` file. The trust-policy file is
 rejected when it lives under `.scirust-verify`; the dossier cannot carry or
-authorize its own root of trust.
+authorize its own root of trust. Authentication rejects envelopes larger than
+1 MiB before JSON parsing, and verifies that the sealed `run.json` identity
+matches the requested run directory.
 
 The result keeps three states separate:
 
