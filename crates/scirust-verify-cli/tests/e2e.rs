@@ -575,8 +575,7 @@ fn detached_authorship_uses_an_independent_trust_root() {
     let tampered_principal_envelope = keys.join("tampered-principal.json");
     let mut tampered_principal: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&attestation).unwrap()).unwrap();
-    tampered_principal["principal"] =
-        serde_json::Value::String("alias@example.test".to_owned());
+    tampered_principal["principal"] = serde_json::Value::String("alias@example.test".to_owned());
     std::fs::write(
         &tampered_principal_envelope,
         serde_json::to_vec_pretty(&tampered_principal).unwrap(),
