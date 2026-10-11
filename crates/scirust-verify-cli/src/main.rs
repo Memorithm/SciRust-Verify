@@ -1022,10 +1022,12 @@ fn attest(
         .take()
         .ok_or_else(|| CliError::infrastructure("ssh-keygen stdin unavailable"))?
         .write_all(&signed_payload)
-        .map_err(|error| CliError::infrastructure(format!("cannot feed signed payload: {error}")))?;
-    let sign = child
-        .wait_with_output()
-        .map_err(|error| CliError::infrastructure(format!("cannot wait for ssh-keygen: {error}")))?;
+        .map_err(|error| {
+            CliError::infrastructure(format!("cannot feed signed payload: {error}"))
+        })?;
+    let sign = child.wait_with_output().map_err(|error| {
+        CliError::infrastructure(format!("cannot wait for ssh-keygen: {error}"))
+    })?;
     if !sign.status.success() {
         return Err(CliError::infrastructure(format!(
             "ssh-keygen refused to sign the bundle: {}",
