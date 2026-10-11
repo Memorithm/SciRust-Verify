@@ -566,6 +566,36 @@ fn detached_authorship_uses_an_independent_trust_root() {
         Some("signed_record")
     );
 
+    let alias_allowed = keys.join("alias_allowed_signers");
+    std::fs::write(
+        &alias_allowed,
+        format!("ci@example.test {public_key}alias@example.test {public_key}"),
+    )
+    .unwrap();
+    let tampered_principal_envelope = keys.join("tampered-principal.json");
+    let mut tampered_principal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&attestation).unwrap()).unwrap();
+    tampered_principal["principal"] =
+        serde_json::Value::String("alias@example.test".to_owned());
+    std::fs::write(
+        &tampered_principal_envelope,
+        serde_json::to_vec_pretty(&tampered_principal).unwrap(),
+    )
+    .unwrap();
+    let tampered_principal_result = cli()
+        .args([
+            "authenticate",
+            &run_id,
+            "--envelope",
+            tampered_principal_envelope.to_str().unwrap(),
+            "--allowed-signers",
+            alias_allowed.to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(tampered_principal_result.status.code(), Some(1));
+
     let sealed_run = store.join(".scirust-verify/runs").join(&run_id);
     let mut copied_run_id = run_id.clone();
     let replacement = if copied_run_id.ends_with('0') {
