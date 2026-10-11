@@ -11,7 +11,7 @@
 #![deny(missing_docs)]
 
 use std::fs;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -682,6 +682,31 @@ fn report(
 }
 
 const SSHSIG_NAMESPACE: &str = "scirust-verify-evidence-v1";
+const MAX_ATTESTATION_ENVELOPE_BYTES: u64 = 1024 * 1024;
+
+fn read_attestation_envelope(path: &Path) -> Result<Vec<u8>, CliError> {
+    let file = fs::File::open(path).map_err(|error| {
+        CliError::usage(format!(
+            "cannot read attestation envelope `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    let mut bytes = Vec::new();
+    file.take(MAX_ATTESTATION_ENVELOPE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            CliError::infrastructure(format!(
+                "cannot read attestation envelope `{}`: {error}",
+                path.display()
+            ))
+        })?;
+    if bytes.len() as u64 > MAX_ATTESTATION_ENVELOPE_BYTES {
+        return Err(CliError::usage(format!(
+            "attestation envelope exceeds the {MAX_ATTESTATION_ENVELOPE_BYTES}-byte limit"
+        )));
+    }
+    Ok(bytes)
+}
 
 fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
     let nonce = SystemTime::now()
@@ -780,25 +805,56 @@ fn attest(
     } else {
         current_dir().join(output)
     };
+    if output.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        )
+    }) {
+        return Err(CliError::usage(
+            "attestation output must be an absolute, normalized path without dot components",
+        ));
+    }
     let output_parent = output
         .parent()
         .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
-    fs::create_dir_all(output_parent).map_err(|error| {
-        CliError::infrastructure(format!(
-            "cannot create attestation directory `{}`: {error}",
-            output_parent.display()
-        ))
-    })?;
+    let canonical_run_dir = run_dir
+        .canonicalize()
+        .map_err(|error| CliError::infrastructure(error.to_string()))?;
+    if output.starts_with(&run_dir) {
+        return Err(CliError::usage(
+            "detached attestations must be stored outside the sealed run directory",
+        ));
+    }
+    if !output_parent.exists() {
+        let existing_parent = output_parent.parent().ok_or_else(|| {
+            CliError::usage("attestation output parent has no existing ancestor")
+        })?;
+        let canonical_existing_parent = existing_parent.canonicalize().map_err(|error| {
+            CliError::usage(format!(
+                "attestation output parent `{}` must already exist: {error}",
+                existing_parent.display()
+            ))
+        })?;
+        if canonical_existing_parent.starts_with(&canonical_run_dir) {
+            return Err(CliError::usage(
+                "detached attestations must be stored outside the sealed run directory",
+            ));
+        }
+        fs::create_dir(output_parent).map_err(|error| {
+            CliError::infrastructure(format!(
+                "cannot create attestation directory `{}`: {error}",
+                output_parent.display()
+            ))
+        })?;
+    }
     let canonical_output_parent = output_parent.canonicalize().map_err(|error| {
         CliError::infrastructure(format!(
             "cannot resolve attestation directory `{}`: {error}",
             output_parent.display()
         ))
     })?;
-    let canonical_run_dir = run_dir
-        .canonicalize()
-        .map_err(|error| CliError::infrastructure(error.to_string()))?;
-    if output.starts_with(&run_dir) || canonical_output_parent.starts_with(&canonical_run_dir) {
+    if canonical_output_parent.starts_with(&canonical_run_dir) {
         return Err(CliError::usage(
             "detached attestations must be stored outside the sealed run directory",
         ));
@@ -902,13 +958,8 @@ fn authenticate(
     let (bundle, sealed_files) = store
         .verify_integrity_snapshot()
         .map_err(|error| CliError::not_found(format!("integrity verification failed: {error}")))?;
-    let envelope_text = fs::read_to_string(envelope_path).map_err(|error| {
-        CliError::usage(format!(
-            "cannot read attestation envelope `{}`: {error}",
-            envelope_path.display()
-        ))
-    })?;
-    let envelope: serde_json::Value = serde_json::from_str(&envelope_text)
+    let envelope_bytes = read_attestation_envelope(envelope_path)?;
+    let envelope: serde_json::Value = serde_json::from_slice(&envelope_bytes)
         .map_err(|error| CliError::usage(format!("invalid attestation envelope: {error}")))?;
     if envelope
         .get("schema_version")
