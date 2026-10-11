@@ -827,9 +827,9 @@ fn attest(
         ));
     }
     if !output_parent.exists() {
-        let existing_parent = output_parent.parent().ok_or_else(|| {
-            CliError::usage("attestation output parent has no existing ancestor")
-        })?;
+        let existing_parent = output_parent
+            .parent()
+            .ok_or_else(|| CliError::usage("attestation output parent has no existing ancestor"))?;
         let canonical_existing_parent = existing_parent.canonicalize().map_err(|error| {
             CliError::usage(format!(
                 "attestation output parent `{}` must already exist: {error}",
