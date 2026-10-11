@@ -520,6 +520,26 @@ fn detached_authorship_uses_an_independent_trust_root() {
         .join(".scirust-verify/attestations")
         .join(format!("{run_id}.json"));
     assert!(attestation.is_file());
+    let original_attestation = std::fs::read(&attestation).unwrap();
+    let duplicate = cli()
+        .args([
+            "attest",
+            &run_id,
+            "--principal",
+            "ci@example.test",
+            "--identity",
+            identity.to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(duplicate.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&duplicate.stderr).contains("rotate it explicitly"),
+        "{}",
+        String::from_utf8_lossy(&duplicate.stderr)
+    );
+    assert_eq!(std::fs::read(&attestation).unwrap(), original_attestation);
 
     let authenticated = cli()
         .args([
