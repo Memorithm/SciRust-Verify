@@ -456,9 +456,165 @@ fn scirust_protocol_ingestion_preserves_semantics() {
 }
 
 #[test]
+fn detached_authorship_uses_an_independent_trust_root() {
+    if std::process::Command::new("ssh-keygen")
+        .arg("-?")
+        .output()
+        .is_err()
+    {
+        eprintln!("ssh-keygen unavailable; skipping OpenSSH attestation exercise");
+        return;
+    }
+
+    prebuild_fixtures();
+    let project = fixture("passing-project");
+    let store = tempfile_dir("authenticity-store");
+    let verified = cli()
+        .args([
+            "verify",
+            project.to_str().unwrap(),
+            "--output",
+            store.join(".scirust-verify").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let run_id = latest_run_in(&store.join(".scirust-verify/runs"));
+
+    let keys = tempfile_dir("authenticity-keys");
+    let identity = keys.join("signer");
+    let keygen = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&identity)
+        .status()
+        .unwrap();
+    assert!(keygen.success());
+    let public_key = std::fs::read_to_string(identity.with_extension("pub")).unwrap();
+    let allowed = keys.join("allowed_signers");
+    std::fs::write(&allowed, format!("ci@example.test {public_key}")).unwrap();
+
+    let attested = cli()
+        .args([
+            "attest",
+            &run_id,
+            "--principal",
+            "ci@example.test",
+            "--identity",
+            identity.to_str().unwrap(),
+            "--json",
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        attested.status.success(),
+        "{}",
+        String::from_utf8_lossy(&attested.stderr)
+    );
+    let attestation = store
+        .join(".scirust-verify/attestations")
+        .join(format!("{run_id}.json"));
+    assert!(attestation.is_file());
+
+    let authenticated = cli()
+        .args([
+            "authenticate",
+            &run_id,
+            "--envelope",
+            attestation.to_str().unwrap(),
+            "--allowed-signers",
+            allowed.to_str().unwrap(),
+            "--json",
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert!(
+        authenticated.status.success(),
+        "{} / {}",
+        String::from_utf8_lossy(&authenticated.stdout),
+        String::from_utf8_lossy(&authenticated.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_slice(&authenticated.stdout).expect("authentication JSON");
+    assert_eq!(
+        result.pointer("/integrity/status").and_then(|value| value.as_str()),
+        Some("verified")
+    );
+    assert_eq!(
+        result
+            .pointer("/authenticity/status")
+            .and_then(|value| value.as_str()),
+        Some("verified")
+    );
+    assert_eq!(
+        result
+            .pointer("/qualification/status")
+            .and_then(|value| value.as_str()),
+        Some("not_evaluated")
+    );
+    assert_eq!(
+        result
+            .pointer("/execution_provenance/status")
+            .and_then(|value| value.as_str()),
+        Some("signed_record")
+    );
+
+    let wrong_allowed = keys.join("wrong_allowed_signers");
+    std::fs::write(&wrong_allowed, format!("other@example.test {public_key}")).unwrap();
+    let rejected = cli()
+        .args([
+            "authenticate",
+            &run_id,
+            "--envelope",
+            attestation.to_str().unwrap(),
+            "--allowed-signers",
+            wrong_allowed.to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&rejected.stdout).contains("authenticity: failed"));
+
+    let embedded_trust = store.join(".scirust-verify/allowed_signers");
+    std::fs::write(&embedded_trust, format!("ci@example.test {public_key}")).unwrap();
+    let non_independent = cli()
+        .args([
+            "authenticate",
+            &run_id,
+            "--envelope",
+            attestation.to_str().unwrap(),
+            "--allowed-signers",
+            embedded_trust.to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(non_independent.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&non_independent.stderr).contains("configured independently")
+    );
+}
+
+#[test]
 fn primary_commands_have_help_and_stable_behavior() {
     for cmd in [
-        "init", "inspect", "plan", "verify", "report", "replay", "diff", "doctor", "schema",
+        "init",
+        "inspect",
+        "plan",
+        "verify",
+        "report",
+        "attest",
+        "authenticate",
+        "replay",
+        "diff",
+        "doctor",
+        "schema",
     ] {
         let out = cli().args([cmd, "--help"]).output().unwrap();
         assert!(out.status.success(), "{cmd} --help failed");
