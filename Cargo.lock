@@ -489,6 +489,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "nix",
  "scirust-verify-cargo",
  "scirust-verify-core",
  "scirust-verify-determinism",
