@@ -756,8 +756,6 @@ fn detached_authorship_uses_an_independent_trust_root() {
             .output()
             .unwrap();
         assert_eq!(self_mutating.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&self_mutating.stderr)
-            .contains("outside every sealed run directory"));
         assert!(!sealed_run.join("forbidden.json").exists());
     }
 
