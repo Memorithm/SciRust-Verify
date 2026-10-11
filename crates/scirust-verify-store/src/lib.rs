@@ -957,6 +957,18 @@ impl RunStore {
     /// Verifies a finalized bundle against its manifest. Returns the number
     /// of verified files. Non-finalized runs are reported as such.
     pub fn verify_integrity(&self) -> Result<usize, StoreError> {
+        self.verify_integrity_snapshot()
+            .map(|(_, verified_files)| verified_files)
+    }
+
+    /// Verifies a finalized bundle and returns the exact manifest bytes that
+    /// described the verified snapshot together with the verified-file count.
+    ///
+    /// The manifest is read once before file verification and once afterward.
+    /// A change between those reads fails closed; callers can therefore sign or
+    /// authenticate the returned bytes without reopening the path-addressable
+    /// manifest and accidentally binding a different concurrent snapshot.
+    pub fn verify_integrity_snapshot(&self) -> Result<(Vec<u8>, usize), StoreError> {
         let run_doc = self.read_run_document()?;
         if run_doc.state != RunState::Finalized {
             return Err(StoreError::corrupt(
@@ -964,7 +976,15 @@ impl RunStore {
                 format!("run is not finalized (state {:?})", run_doc.state),
             ));
         }
-        let manifest: BundleManifest = self.read_json("bundle.json")?;
+        let manifest_path = self.run_dir.join("bundle.json");
+        let mut manifest_budget = ReadBudget::default();
+        let manifest_bytes = self.read_bounded_regular("bundle.json", &mut manifest_budget)?;
+        let manifest: BundleManifest = serde_json::from_slice(&manifest_bytes).map_err(|source| {
+            StoreError::Serde {
+                path: manifest_path,
+                source,
+            }
+        })?;
         if manifest.files.len() > MAX_BUNDLE_FILES {
             return Err(StoreError::corrupt(
                 self.run_id.as_str(),
@@ -1010,7 +1030,16 @@ impl RunStore {
                 "bundle changed during integrity verification",
             ));
         }
-        Ok(manifest.files.len())
+        let mut final_manifest_budget = ReadBudget::default();
+        let final_manifest_bytes =
+            self.read_bounded_regular("bundle.json", &mut final_manifest_budget)?;
+        if final_manifest_bytes != manifest_bytes {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                "bundle manifest changed during integrity verification",
+            ));
+        }
+        Ok((manifest_bytes, manifest.files.len()))
     }
 
     fn write_json<T: Serialize>(&self, rel: &str, value: &T) -> Result<(), StoreError> {
