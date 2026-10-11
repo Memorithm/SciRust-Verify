@@ -801,9 +801,7 @@ fn attest(
     let canonical_run_dir = run_dir
         .canonicalize()
         .map_err(|error| CliError::infrastructure(error.to_string()))?;
-    if output.starts_with(&run_dir)
-        || canonical_output_parent.starts_with(&canonical_run_dir)
-    {
+    if output.starts_with(&run_dir) || canonical_output_parent.starts_with(&canonical_run_dir) {
         return Err(CliError::usage(
             "detached attestations must be stored outside the sealed run directory",
         ));
