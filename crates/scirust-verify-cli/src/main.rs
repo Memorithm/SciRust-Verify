@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt as _;
+
 use clap::{Parser, Subcommand};
 use scirust_verify_cargo::CargoProvider;
 use scirust_verify_core::discovery::DiscoveryContext;
@@ -695,12 +698,27 @@ fn signed_attestation_payload(principal: &str, bundle: &[u8]) -> Vec<u8> {
 }
 
 fn read_attestation_envelope(path: &Path) -> Result<Vec<u8>, CliError> {
-    let file = fs::File::open(path).map_err(|error| {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    options.custom_flags(0o404000); // O_NOFOLLOW | O_NONBLOCK
+    let file = options.open(path).map_err(|error| {
         CliError::usage(format!(
-            "cannot read attestation envelope `{}`: {error}",
+            "cannot open regular attestation envelope `{}`: {error}",
             path.display()
         ))
     })?;
+    let metadata = file.metadata().map_err(|error| {
+        CliError::usage(format!(
+            "cannot inspect attestation envelope `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(CliError::usage(
+            "attestation envelope must be a regular file",
+        ));
+    }
     let mut bytes = Vec::new();
     file.take(MAX_ATTESTATION_ENVELOPE_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -751,12 +769,6 @@ fn write_attestation(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliEr
     let parent = path
         .parent()
         .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
-    fs::create_dir_all(parent).map_err(|error| {
-        CliError::infrastructure(format!(
-            "cannot create attestation directory `{}`: {error}",
-            parent.display()
-        ))
-    })?;
     let temporary = parent.join(format!(
         ".attestation-{}-{}.tmp",
         std::process::id(),
@@ -804,7 +816,7 @@ fn attest(
     let (bundle, sealed_files) = store
         .verify_integrity_snapshot()
         .map_err(|error| CliError::not_found(format!("integrity verification failed: {error}")))?;
-    let run_dir = root.join(".scirust-verify").join("runs").join(run);
+    let runs_root = root.join(".scirust-verify").join("runs");
     let output = output.unwrap_or_else(|| {
         root.join(".scirust-verify")
             .join("attestations")
@@ -828,10 +840,10 @@ fn attest(
     let output_parent = output
         .parent()
         .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
-    let canonical_run_dir = run_dir
+    let canonical_runs_root = runs_root
         .canonicalize()
         .map_err(|error| CliError::infrastructure(error.to_string()))?;
-    if output.starts_with(&run_dir) {
+    if output.starts_with(&runs_root) {
         return Err(CliError::usage(
             "detached attestations must be stored outside the sealed run directory",
         ));
@@ -846,7 +858,7 @@ fn attest(
                 existing_parent.display()
             ))
         })?;
-        if canonical_existing_parent.starts_with(&canonical_run_dir) {
+        if canonical_existing_parent.starts_with(&canonical_runs_root) {
             return Err(CliError::usage(
                 "detached attestations must be stored outside the sealed run directory",
             ));
@@ -864,7 +876,7 @@ fn attest(
             output_parent.display()
         ))
     })?;
-    if canonical_output_parent.starts_with(&canonical_run_dir) {
+    if canonical_output_parent.starts_with(&canonical_runs_root) {
         return Err(CliError::usage(
             "detached attestations must be stored outside the sealed run directory",
         ));
