@@ -684,6 +684,16 @@ fn report(
 const SSHSIG_NAMESPACE: &str = "scirust-verify-evidence-v1";
 const MAX_ATTESTATION_ENVELOPE_BYTES: u64 = 1024 * 1024;
 
+fn signed_attestation_payload(principal: &str, bundle: &[u8]) -> Vec<u8> {
+    let mut payload = format!(
+        "SCIRUST-VERIFY-ATTESTATION-V1\nprincipal:{principal}\nmanifest-length:{}\n\n",
+        bundle.len()
+    )
+    .into_bytes();
+    payload.extend_from_slice(bundle);
+    payload
+}
+
 fn read_attestation_envelope(path: &Path) -> Result<Vec<u8>, CliError> {
     let file = fs::File::open(path).map_err(|error| {
         CliError::usage(format!(
@@ -867,8 +877,9 @@ fn attest(
     })?;
 
     let temporary = attestation_temp_dir("sign")?;
-    let payload = temporary.join("bundle.json");
-    fs::write(&payload, &bundle).map_err(|error| {
+    let payload = temporary.join("attestation.payload");
+    let signed_payload = signed_attestation_payload(principal, &bundle);
+    fs::write(&payload, &signed_payload).map_err(|error| {
         CliError::infrastructure(format!("cannot stage bundle for signing: {error}"))
     })?;
     let sign = ProcessCommand::new("ssh-keygen")
@@ -888,7 +899,7 @@ fn attest(
             String::from_utf8_lossy(&sign.stderr).trim()
         )));
     }
-    let signature_path = payload.with_extension("json.sig");
+    let signature_path = payload.with_extension("payload.sig");
     let signature = fs::read_to_string(&signature_path).map_err(|error| {
         CliError::infrastructure(format!(
             "ssh-keygen did not publish a readable signature: {error}"
@@ -901,6 +912,7 @@ fn attest(
         "run_id": run,
         "bundle_sha256": bundle_digest,
         "namespace": SSHSIG_NAMESPACE,
+        "signed_payload": "principal-and-exact-bundle-v1",
         "principal": principal,
         "signature": signature,
         "claims": {
@@ -971,6 +983,7 @@ fn authenticate(
     }
     if envelope_string(&envelope, "run_id")? != run
         || envelope_string(&envelope, "namespace")? != SSHSIG_NAMESPACE
+        || envelope_string(&envelope, "signed_payload")? != "principal-and-exact-bundle-v1"
     {
         return Err(CliError::usage(
             "attestation run identity or namespace does not match the requested dossier",
@@ -1023,11 +1036,12 @@ fn authenticate(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| CliError::infrastructure(format!("cannot execute ssh-keygen: {error}")))?;
+    let signed_payload = signed_attestation_payload(principal, &bundle);
     child
         .stdin
         .take()
         .ok_or_else(|| CliError::infrastructure("ssh-keygen stdin unavailable"))?
-        .write_all(&bundle)
+        .write_all(&signed_payload)
         .map_err(|error| CliError::infrastructure(format!("cannot feed signed bundle: {error}")))?;
     let verification = child.wait_with_output().map_err(|error| {
         CliError::infrastructure(format!("cannot wait for ssh-keygen: {error}"))
