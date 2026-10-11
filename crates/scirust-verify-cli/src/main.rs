@@ -907,12 +907,12 @@ fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
 }
 
 #[cfg(not(windows))]
-fn replace_attestation(temporary: &Path, destination: &Path) -> io::Result<()> {
+fn replace_attestation(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     fs::rename(temporary, destination)
 }
 
 #[cfg(windows)]
-fn replace_attestation(temporary: &Path, destination: &Path) -> io::Result<()> {
+fn replace_attestation(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     // Windows rename does not replace an existing file. The destination was
     // already checked to be a regular file and --force explicitly authorizes
     // replacement, so remove it before publishing the fully synced temporary.
