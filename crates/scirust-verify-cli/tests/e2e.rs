@@ -455,6 +455,7 @@ fn scirust_protocol_ingestion_preserves_semantics() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn detached_authorship_uses_an_independent_trust_root() {
     if std::process::Command::new("ssh-keygen")
