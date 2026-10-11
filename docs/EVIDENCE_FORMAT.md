@@ -147,12 +147,13 @@ A finalized dossier may be accompanied by a detached JSON envelope under
 `.scirust-verify/attestations/<run-id>.json` (or another operator-selected
 path **outside** the sealed run). The envelope records the run id, SHA-256 of
 the exact `bundle.json` bytes, OpenSSH SSHSIG namespace
-`scirust-verify-evidence-v1`, claimed principal and armored detached
-signature.
+`scirust-verify-evidence-v1`, signed-payload schema, principal and armored
+detached signature.
 
-`scirust-verify attest` first verifies bundle integrity and then signs only
-those exact manifest bytes. `scirust-verify authenticate` verifies integrity,
-recomputes the manifest digest, and asks `ssh-keygen -Y verify` to authorize
+`scirust-verify attest` first verifies bundle integrity and then signs a
+domain-separated payload that binds the principal and those exact manifest
+bytes. `scirust-verify authenticate` verifies integrity, reconstructs that
+payload, recomputes the manifest digest, and asks `ssh-keygen -Y verify` to authorize
 the principal against an `allowed_signers` file. The trust-policy file is
 rejected when it lives under `.scirust-verify`; the dossier cannot carry or
 authorize its own root of trust. Authentication rejects envelopes larger than
