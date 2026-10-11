@@ -22,6 +22,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt as _;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
 
@@ -948,7 +950,9 @@ fn write_attestation(
         .map_err(|error| {
             CliError::infrastructure(format!("cannot persist attestation: {error}"))
         })?;
-    drop(file);
+    let opened_metadata = file.metadata().map_err(|error| {
+        CliError::infrastructure(format!("cannot inspect temporary attestation: {error}"))
+    })?;
     let publish = if force {
         replace_attestation(&temporary, &path)
     } else {
@@ -962,7 +966,23 @@ fn write_attestation(
             "cannot publish attestation `{}`: {error}",
             output.display_path.display()
         ))
-    })
+    })?;
+    let published_metadata = fs::metadata(&path).map_err(|error| {
+        CliError::infrastructure(format!(
+            "cannot verify published attestation `{}`: {error}",
+            output.display_path.display()
+        ))
+    })?;
+    #[cfg(target_os = "linux")]
+    if opened_metadata.dev() != published_metadata.dev()
+        || opened_metadata.ino() != published_metadata.ino()
+    {
+        return Err(CliError::infrastructure(
+            "published attestation does not match the opened temporary inode",
+        ));
+    }
+    drop(file);
+    Ok(())
 }
 
 fn attest(
