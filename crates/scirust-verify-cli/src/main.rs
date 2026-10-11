@@ -746,11 +746,12 @@ fn read_attestation_envelope(path: &Path) -> Result<Vec<u8>, CliError> {
     Ok(bytes)
 }
 
-fn read_allowed_signers(path: &Path) -> Result<(PathBuf, Vec<u8>), CliError> {
+#[cfg(target_os = "linux")]
+fn open_allowed_signers(path: &Path) -> Result<(PathBuf, fs::File), CliError> {
     let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
+    options
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
     let file = options.open(path).map_err(|error| {
         CliError::usage(format!(
             "cannot open regular allowed-signers trust root `{}`: {error}",
@@ -768,32 +769,22 @@ fn read_allowed_signers(path: &Path) -> Result<(PathBuf, Vec<u8>), CliError> {
             "allowed-signers trust root must be a regular file",
         ));
     }
-    #[cfg(target_os = "linux")]
-    let canonical = descriptor_path(&file)
-        .canonicalize()
-        .map_err(|error| CliError::usage(format!("cannot resolve opened trust root: {error}")))?;
-    #[cfg(not(target_os = "linux"))]
-    let canonical = path.canonicalize().map_err(|error| {
-        CliError::usage(format!(
-            "cannot resolve allowed-signers trust root `{}`: {error}",
-            path.display()
-        ))
-    })?;
-    let mut bytes = Vec::new();
-    file.take(MAX_ALLOWED_SIGNERS_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
-            CliError::usage(format!(
-                "cannot read allowed-signers trust root `{}`: {error}",
-                path.display()
-            ))
-        })?;
-    if bytes.len() as u64 > MAX_ALLOWED_SIGNERS_BYTES {
+    if metadata.len() > MAX_ALLOWED_SIGNERS_BYTES {
         return Err(CliError::usage(format!(
             "allowed-signers trust root exceeds the {MAX_ALLOWED_SIGNERS_BYTES}-byte limit"
         )));
     }
-    Ok((canonical, bytes))
+    let canonical = descriptor_path(&file)
+        .canonicalize()
+        .map_err(|error| CliError::usage(format!("cannot resolve opened trust root: {error}")))?;
+    Ok((canonical, file))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_allowed_signers(_path: &Path) -> Result<(PathBuf, fs::File), CliError> {
+    Err(CliError::usage(
+        "detached authentication is supported only on Linux, where the opened trust root can remain pinned through ssh-keygen verification",
+    ))
 }
 
 struct PreparedAttestationOutput {
@@ -1223,7 +1214,7 @@ fn authenticate(
     let principal = envelope_string(&envelope, "principal")?;
     let signature = envelope_string(&envelope, "signature")?;
 
-    let (trust_root, trust_root_bytes) = read_allowed_signers(allowed_signers)?;
+    let (trust_root, trust_root_file) = open_allowed_signers(allowed_signers)?;
     let verifier_root = root
         .join(".scirust-verify")
         .canonicalize()
@@ -1236,18 +1227,22 @@ fn authenticate(
 
     let temporary = attestation_temp_dir("verify")?;
     let signature_path = temporary.join("bundle.sshsig");
-    let trust_snapshot_path = temporary.join("allowed_signers");
     fs::write(&signature_path, signature.as_bytes()).map_err(|error| {
         CliError::infrastructure(format!("cannot stage detached signature: {error}"))
     })?;
-    fs::write(&trust_snapshot_path, &trust_root_bytes).map_err(|error| {
-        CliError::infrastructure(format!("cannot stage allowed-signers snapshot: {error}"))
-    })?;
+    #[cfg(target_os = "linux")]
+    let trust_descriptor_path = PathBuf::from(format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        trust_root_file.as_raw_fd()
+    ));
+    #[cfg(not(target_os = "linux"))]
+    let trust_descriptor_path = trust_root.clone();
     let mut child = ProcessCommand::new("ssh-keygen")
         .arg("-Y")
         .arg("verify")
         .arg("-f")
-        .arg(&trust_snapshot_path)
+        .arg(&trust_descriptor_path)
         .arg("-I")
         .arg(principal)
         .arg("-n")
@@ -1269,6 +1264,7 @@ fn authenticate(
     let verification = child.wait_with_output().map_err(|error| {
         CliError::infrastructure(format!("cannot wait for ssh-keygen: {error}"))
     })?;
+    drop(trust_root_file);
     let _ = fs::remove_dir_all(&temporary);
     let authenticated = verification.status.success();
     let provenance_status = if authenticated {
