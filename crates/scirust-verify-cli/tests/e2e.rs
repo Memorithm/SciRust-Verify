@@ -758,6 +758,22 @@ fn detached_authorship_uses_an_independent_trust_root() {
         assert_eq!(fifo_result.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&fifo_result.stderr).contains("regular file"));
 
+        let fifo_trust = cli()
+            .args([
+                "authenticate",
+                &run_id,
+                "--envelope",
+                attestation.to_str().unwrap(),
+                "--allowed-signers",
+                fifo.to_str().unwrap(),
+            ])
+            .current_dir(&store)
+            .timeout(std::time::Duration::from_secs(10))
+            .output()
+            .unwrap();
+        assert_eq!(fifo_trust.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&fifo_trust.stderr).contains("regular file"));
+
         let sealed_run = store.join(".scirust-verify/runs").join(&run_id);
         let disguised_run = keys.join("disguised-run");
         std::os::unix::fs::symlink(&sealed_run, &disguised_run).unwrap();
