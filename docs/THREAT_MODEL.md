@@ -128,7 +128,10 @@ established OpenSSH SSHSIG format, then verifies it against an
 provenance record. It does **not** prove that the execution environment told
 the truth, re-run imported evidence, or upgrade scientific/product
 qualification. Unsigned bundles remain integrity-only and are never labeled
-authenticated.
+authenticated. Attestation publication is Linux-only in this release: Linux
+keeps the validated output directory pinned by descriptor through atomic
+publication. Other platforms fail closed instead of reopening a mutable path;
+authentication of an existing detached envelope remains portable.
 
 ### Forged provenance
 
