@@ -117,11 +117,17 @@ node_modules) are skipped.
 * attachments carry size+digest verified at finalize and at load;
 * sealed runs refuse store-level mutation.
 
-*Residual:* anyone with filesystem write access can rebuild the entire bundle
-including `bundle.json`. Sealing detects *accidents and partial tampering*;
-it is not cryptographic authorship. Signed dossiers (with established Rust
-crypto libraries, identified algorithms and key management) are a planned
-extension; unsigned bundles are never labeled signed today.
+*Residual and optional authorship control:* anyone with filesystem write
+access can rebuild the entire bundle including `bundle.json`. Sealing alone
+detects *accidents and partial tampering*; it is not cryptographic authorship.
+The optional `attest`/`authenticate` flow signs the exact `bundle.json`
+bytes with the established OpenSSH SSHSIG format and verifies them against an
+`allowed_signers` trust root that must be configured independently outside
+`.scirust-verify`. That authenticates a principal's signature over the sealed
+provenance record. It does **not** prove that the execution environment told
+the truth, re-run imported evidence, or upgrade scientific/product
+qualification. Unsigned bundles remain integrity-only and are never labeled
+authenticated.
 
 ### Forged provenance
 
@@ -157,7 +163,8 @@ Reviewing a manifest before running it is *your* responsibility.
 ## Explicit non-goals for V0.1
 
 * No sandboxing of any kind.
-* No cryptographic signatures on dossiers.
+* No embedded or self-authorizing trust root. Detached OpenSSH signatures are
+  optional and require an independently managed `allowed_signers` policy.
 * No network-isolation guarantees for executed commands.
 * No formal proof artifacts (all current evidence is empirical).
 
