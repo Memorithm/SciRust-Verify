@@ -141,6 +141,33 @@ never reloads mutable run metadata after the comparison. Integrity verification
 likewise compares the complete digest map from its final traversal with the
 manifest, not only their path sets.
 
+## Detached authorship and trust policy
+
+A finalized dossier may be accompanied by a detached JSON envelope under
+`.scirust-verify/attestations/<run-id>.json` (or another operator-selected
+path **outside** the sealed run). The envelope records the run id, SHA-256 of
+the exact `bundle.json` bytes, OpenSSH SSHSIG namespace
+`scirust-verify-evidence-v1`, claimed principal and armored detached
+signature.
+
+`scirust-verify attest` first verifies bundle integrity and then signs only
+those exact manifest bytes. `scirust-verify authenticate` verifies integrity,
+recomputes the manifest digest, and asks `ssh-keygen -Y verify` to authorize
+the principal against an `allowed_signers` file. The trust-policy file is
+rejected when it lives under `.scirust-verify`; the dossier cannot carry or
+authorize its own root of trust.
+
+The result keeps three states separate:
+
+* **integrity** — sealed files match `bundle.json`;
+* **authenticity** — the detached signature is accepted by the external trust
+  policy for the named principal;
+* **qualification** — always `not_evaluated` by signing/authentication.
+
+An authenticated signature binds the signer to the sealed provenance record.
+It does not establish that a compromised environment reported truth, and it
+does not turn imported producer evidence into locally re-executed evidence.
+
 ## Canonicalization contract
 
 Wherever structured data is hashed (plan digests, fingerprints):
