@@ -950,6 +950,7 @@ fn write_attestation(
         .map_err(|error| {
             CliError::infrastructure(format!("cannot persist attestation: {error}"))
         })?;
+    #[cfg(target_os = "linux")]
     let opened_metadata = file.metadata().map_err(|error| {
         CliError::infrastructure(format!("cannot inspect temporary attestation: {error}"))
     })?;
@@ -967,14 +968,16 @@ fn write_attestation(
             output.display_path.display()
         ))
     })?;
-    let published_metadata = fs::metadata(&path).map_err(|error| {
+    #[cfg(target_os = "linux")]
+    let published_metadata = fs::symlink_metadata(&path).map_err(|error| {
         CliError::infrastructure(format!(
             "cannot verify published attestation `{}`: {error}",
             output.display_path.display()
         ))
     })?;
     #[cfg(target_os = "linux")]
-    if opened_metadata.dev() != published_metadata.dev()
+    if !published_metadata.is_file()
+        || opened_metadata.dev() != published_metadata.dev()
         || opened_metadata.ino() != published_metadata.ino()
     {
         return Err(CliError::infrastructure(
