@@ -969,23 +969,6 @@ impl RunStore {
     /// authenticate the returned bytes without reopening the path-addressable
     /// manifest and accidentally binding a different concurrent snapshot.
     pub fn verify_integrity_snapshot(&self) -> Result<(Vec<u8>, usize), StoreError> {
-        let run_doc = self.read_run_document()?;
-        if run_doc.run_id != self.run_id {
-            return Err(StoreError::corrupt(
-                self.run_id.as_str(),
-                format!(
-                    "sealed run identity {} does not match directory identity {}",
-                    run_doc.run_id.as_str(),
-                    self.run_id.as_str()
-                ),
-            ));
-        }
-        if run_doc.state != RunState::Finalized {
-            return Err(StoreError::corrupt(
-                self.run_id.as_str(),
-                format!("run is not finalized (state {:?})", run_doc.state),
-            ));
-        }
         let manifest_path = self.run_dir.join("bundle.json");
         let mut manifest_budget = ReadBudget::default();
         let manifest_bytes = self.read_bounded_regular("bundle.json", &mut manifest_budget)?;
@@ -1001,6 +984,7 @@ impl RunStore {
             ));
         }
         let mut sealed_budget = ReadBudget::default();
+        let mut verified_run_document = None;
         for (rel, expected_hex) in &manifest.files {
             let safe_rel = sanitize_attachment_path(rel)?;
             if safe_rel == "bundle.json" {
@@ -1027,6 +1011,35 @@ impl RunStore {
                     ),
                 ));
             }
+            if safe_rel == "run.json" {
+                let path = self.run_dir.join(&safe_rel);
+                verified_run_document =
+                    Some(serde_json::from_slice::<RunDocument>(&bytes).map_err(|source| {
+                        StoreError::Serde { path, source }
+                    })?);
+            }
+        }
+        let run_doc = verified_run_document.ok_or_else(|| {
+            StoreError::corrupt(
+                self.run_id.as_str(),
+                "integrity manifest does not seal run.json",
+            )
+        })?;
+        if run_doc.run_id != self.run_id {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!(
+                    "sealed run identity {} does not match directory identity {}",
+                    run_doc.run_id.as_str(),
+                    self.run_id.as_str()
+                ),
+            ));
+        }
+        if run_doc.state != RunState::Finalized {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!("run is not finalized (state {:?})", run_doc.state),
+            ));
         }
         // Every non-manifest file must be sealed too (detect additions).
         let mut present = BTreeMap::new();
