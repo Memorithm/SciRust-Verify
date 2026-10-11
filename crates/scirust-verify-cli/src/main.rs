@@ -681,7 +681,6 @@ fn report(
     Ok(ExitCode::SUCCESS)
 }
 
-
 const SSHSIG_NAMESPACE: &str = "scirust-verify-evidence-v1";
 
 fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
@@ -693,8 +692,9 @@ fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
         "scirust-verify-{tag}-{}-{nonce}",
         std::process::id()
     ));
-    fs::create_dir(&path)
-        .map_err(|error| CliError::infrastructure(format!("cannot create temporary directory: {error}")))?;
+    fs::create_dir(&path).map_err(|error| {
+        CliError::infrastructure(format!("cannot create temporary directory: {error}"))
+    })?;
     Ok(path)
 }
 
@@ -734,10 +734,14 @@ fn write_attestation(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliEr
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .map_err(|error| CliError::infrastructure(format!("cannot create temporary attestation: {error}")))?;
+        .map_err(|error| {
+            CliError::infrastructure(format!("cannot create temporary attestation: {error}"))
+        })?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
-        .map_err(|error| CliError::infrastructure(format!("cannot persist attestation: {error}")))?;
+        .map_err(|error| {
+            CliError::infrastructure(format!("cannot persist attestation: {error}"))
+        })?;
     drop(file);
     fs::rename(&temporary, path).map_err(|error| {
         let _ = fs::remove_file(&temporary);
@@ -805,9 +809,7 @@ fn attest(
         .arg(SSHSIG_NAMESPACE)
         .arg(&payload)
         .output()
-        .map_err(|error| {
-            CliError::infrastructure(format!("cannot execute ssh-keygen: {error}"))
-        })?;
+        .map_err(|error| CliError::infrastructure(format!("cannot execute ssh-keygen: {error}")))?;
     if !sign.status.success() {
         let _ = fs::remove_dir_all(&temporary);
         return Err(CliError::infrastructure(format!(
@@ -817,7 +819,9 @@ fn attest(
     }
     let signature_path = payload.with_extension("json.sig");
     let signature = fs::read_to_string(&signature_path).map_err(|error| {
-        CliError::infrastructure(format!("ssh-keygen did not publish a readable signature: {error}"))
+        CliError::infrastructure(format!(
+            "ssh-keygen did not publish a readable signature: {error}"
+        ))
     })?;
     let bundle_digest = Digest::sha256_hex(bundle.as_bytes()).value;
     let envelope = serde_json::json!({
@@ -856,20 +860,21 @@ fn attest(
     } else {
         println!("published detached attestation: {}", output.display());
         println!("integrity: verified ({sealed_files} sealed files)");
-        println!("authenticity: unevaluated until checked against an external allowed-signers file");
+        println!(
+            "authenticity: unevaluated until checked against an external allowed-signers file"
+        );
         println!("qualification: not evaluated by signing");
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn envelope_string<'a>(
-    envelope: &'a serde_json::Value,
-    field: &str,
-) -> Result<&'a str, CliError> {
+fn envelope_string<'a>(envelope: &'a serde_json::Value, field: &str) -> Result<&'a str, CliError> {
     envelope
         .get(field)
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| CliError::usage(format!("attestation envelope lacks string field `{field}`")))
+        .ok_or_else(|| {
+            CliError::usage(format!("attestation envelope lacks string field `{field}`"))
+        })
 }
 
 fn authenticate(
@@ -893,7 +898,10 @@ fn authenticate(
     })?;
     let envelope: serde_json::Value = serde_json::from_str(&envelope_text)
         .map_err(|error| CliError::usage(format!("invalid attestation envelope: {error}")))?;
-    if envelope.get("schema_version").and_then(serde_json::Value::as_u64) != Some(1)
+    if envelope
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
         || envelope_string(&envelope, "kind")? != "scirust-verify-detached-sshsig"
     {
         return Err(CliError::usage("unsupported attestation envelope"));
@@ -951,18 +959,16 @@ fn authenticate(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| {
-            CliError::infrastructure(format!("cannot execute ssh-keygen: {error}"))
-        })?;
+        .map_err(|error| CliError::infrastructure(format!("cannot execute ssh-keygen: {error}")))?;
     child
         .stdin
         .take()
         .ok_or_else(|| CliError::infrastructure("ssh-keygen stdin unavailable"))?
         .write_all(bundle.as_bytes())
         .map_err(|error| CliError::infrastructure(format!("cannot feed signed bundle: {error}")))?;
-    let verification = child
-        .wait_with_output()
-        .map_err(|error| CliError::infrastructure(format!("cannot wait for ssh-keygen: {error}")))?;
+    let verification = child.wait_with_output().map_err(|error| {
+        CliError::infrastructure(format!("cannot wait for ssh-keygen: {error}"))
+    })?;
     let _ = fs::remove_dir_all(&temporary);
     let authenticated = verification.status.success();
     let document = serde_json::json!({
