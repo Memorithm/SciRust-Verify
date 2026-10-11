@@ -601,8 +601,7 @@ fn detached_authorship_uses_an_independent_trust_root() {
         .output()
         .unwrap();
     assert_eq!(mismatched_identity.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&mismatched_identity.stderr)
-        .contains("sealed run identity"));
+    assert!(String::from_utf8_lossy(&mismatched_identity.stderr).contains("sealed run identity"));
 
     let wrong_allowed = keys.join("wrong_allowed_signers");
     std::fs::write(&wrong_allowed, format!("other@example.test {public_key}")).unwrap();
