@@ -576,12 +576,26 @@ fn detached_authorship_uses_an_independent_trust_root() {
             attestation.to_str().unwrap(),
             "--allowed-signers",
             wrong_allowed.to_str().unwrap(),
+            "--json",
         ])
         .current_dir(&store)
         .output()
         .unwrap();
     assert_eq!(rejected.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&rejected.stdout).contains("authenticity: failed"));
+    let rejected_result: serde_json::Value =
+        serde_json::from_slice(&rejected.stdout).expect("rejected authentication JSON");
+    assert_eq!(
+        rejected_result
+            .pointer("/authenticity/status")
+            .and_then(|value| value.as_str()),
+        Some("failed")
+    );
+    assert_eq!(
+        rejected_result
+            .pointer("/execution_provenance/status")
+            .and_then(|value| value.as_str()),
+        Some("unverified")
+    );
 
     #[cfg(unix)]
     {
