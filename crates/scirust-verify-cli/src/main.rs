@@ -25,7 +25,7 @@ use std::os::fd::AsRawFd as _;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt as _;
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 
 #[cfg(target_os = "linux")]
 use nix::fcntl::{AtFlags, AT_FDCWD};
@@ -695,6 +695,7 @@ fn report(
 
 const SSHSIG_NAMESPACE: &str = "scirust-verify-evidence-v1";
 const MAX_ATTESTATION_ENVELOPE_BYTES: u64 = 1024 * 1024;
+const MAX_ALLOWED_SIGNERS_BYTES: u64 = 1024 * 1024;
 
 fn signed_attestation_payload(principal: &str, bundle: &[u8]) -> Vec<u8> {
     let mut payload = format!(
@@ -743,6 +744,56 @@ fn read_attestation_envelope(path: &Path) -> Result<Vec<u8>, CliError> {
         )));
     }
     Ok(bytes)
+}
+
+fn read_allowed_signers(path: &Path) -> Result<(PathBuf, Vec<u8>), CliError> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
+    let file = options.open(path).map_err(|error| {
+        CliError::usage(format!(
+            "cannot open regular allowed-signers trust root `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        CliError::usage(format!(
+            "cannot inspect allowed-signers trust root `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(CliError::usage(
+            "allowed-signers trust root must be a regular file",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    let canonical = descriptor_path(&file)
+        .canonicalize()
+        .map_err(|error| CliError::usage(format!("cannot resolve opened trust root: {error}")))?;
+    #[cfg(not(target_os = "linux"))]
+    let canonical = path.canonicalize().map_err(|error| {
+        CliError::usage(format!(
+            "cannot resolve allowed-signers trust root `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    let mut bytes = Vec::new();
+    file.take(MAX_ALLOWED_SIGNERS_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            CliError::usage(format!(
+                "cannot read allowed-signers trust root `{}`: {error}",
+                path.display()
+            ))
+        })?;
+    if bytes.len() as u64 > MAX_ALLOWED_SIGNERS_BYTES {
+        return Err(CliError::usage(format!(
+            "allowed-signers trust root exceeds the {MAX_ALLOWED_SIGNERS_BYTES}-byte limit"
+        )));
+    }
+    Ok((canonical, bytes))
 }
 
 struct PreparedAttestationOutput {
@@ -854,6 +905,28 @@ fn prepare_attestation_output(
             "detached attestations must be stored outside every sealed run directory",
         ));
     }
+    let anchored_output = descriptor_path(&parent_handle).join(&file_name);
+    match fs::symlink_metadata(&anchored_output) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(CliError::usage(format!(
+                "attestation output `{}` is not a regular file",
+                output.display()
+            )));
+        }
+        Ok(_) => {
+            return Err(CliError::usage(format!(
+                "attestation output `{}` already exists; rotate it explicitly before signing a new envelope",
+                output.display()
+            )));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(CliError::infrastructure(format!(
+                "cannot inspect attestation output `{}`: {error}",
+                output.display()
+            )));
+        }
+    }
     Ok(PreparedAttestationOutput {
         display_path: output,
         parent: parent_handle,
@@ -880,6 +953,15 @@ fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
         "scirust-verify-{tag}-{}-{nonce}",
         std::process::id()
     ));
+    #[cfg(unix)]
+    {
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&path).map_err(|error| {
+            CliError::infrastructure(format!("cannot create temporary directory: {error}"))
+        })?;
+    }
+    #[cfg(not(unix))]
     fs::create_dir(&path).map_err(|error| {
         CliError::infrastructure(format!("cannot create temporary directory: {error}"))
     })?;
@@ -1141,12 +1223,7 @@ fn authenticate(
     let principal = envelope_string(&envelope, "principal")?;
     let signature = envelope_string(&envelope, "signature")?;
 
-    let trust_root = allowed_signers.canonicalize().map_err(|error| {
-        CliError::usage(format!(
-            "cannot resolve allowed-signers trust root `{}`: {error}",
-            allowed_signers.display()
-        ))
-    })?;
+    let (trust_root, trust_root_bytes) = read_allowed_signers(allowed_signers)?;
     let verifier_root = root
         .join(".scirust-verify")
         .canonicalize()
@@ -1159,14 +1236,18 @@ fn authenticate(
 
     let temporary = attestation_temp_dir("verify")?;
     let signature_path = temporary.join("bundle.sshsig");
+    let trust_snapshot_path = temporary.join("allowed_signers");
     fs::write(&signature_path, signature.as_bytes()).map_err(|error| {
         CliError::infrastructure(format!("cannot stage detached signature: {error}"))
+    })?;
+    fs::write(&trust_snapshot_path, &trust_root_bytes).map_err(|error| {
+        CliError::infrastructure(format!("cannot stage allowed-signers snapshot: {error}"))
     })?;
     let mut child = ProcessCommand::new("ssh-keygen")
         .arg("-Y")
         .arg("verify")
         .arg("-f")
-        .arg(&trust_root)
+        .arg(&trust_snapshot_path)
         .arg("-I")
         .arg(principal)
         .arg("-n")
