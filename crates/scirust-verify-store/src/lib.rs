@@ -1013,10 +1013,10 @@ impl RunStore {
             }
             if safe_rel == "run.json" {
                 let path = self.run_dir.join(&safe_rel);
-                verified_run_document =
-                    Some(serde_json::from_slice::<RunDocument>(&bytes).map_err(|source| {
-                        StoreError::Serde { path, source }
-                    })?);
+                verified_run_document = Some(
+                    serde_json::from_slice::<RunDocument>(&bytes)
+                        .map_err(|source| StoreError::Serde { path, source })?,
+                );
             }
         }
         let run_doc = verified_run_document.ok_or_else(|| {
