@@ -11,7 +11,7 @@
 #![deny(missing_docs)]
 
 #[cfg(target_os = "linux")]
-use std::ffi::{CString, OsString};
+use std::ffi::OsString;
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::io;
@@ -23,11 +23,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
 #[cfg(target_os = "linux")]
-use std::os::unix::ffi::OsStrExt as _;
-#[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt as _;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
+
+#[cfg(target_os = "linux")]
+use nix::fcntl::{AtFlags, AT_FDCWD};
+#[cfg(target_os = "linux")]
+use nix::unistd::{linkat, unlinkat, UnlinkatFlags};
 
 use clap::{Parser, Subcommand};
 use scirust_verify_cargo::CargoProvider;
@@ -931,17 +934,18 @@ fn write_attestation(
         CliError::infrastructure(format!("cannot inspect temporary attestation: {error}"))
     })?;
 
-    let target = CString::new(output.file_name.as_os_str().as_bytes()).map_err(|_| {
-        CliError::usage("attestation output filename contains an embedded NUL byte")
-    })?;
     if force {
         // Removing first preserves the unnamed-inode guarantee: the new inode
         // is linked directly at the destination and is never exposed through a
         // staging pathname. A racing creator makes linkat fail closed.
-        let removed = unsafe { nix::libc::unlinkat(output.parent.as_raw_fd(), target.as_ptr(), 0) };
-        if removed != 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::NotFound {
+        match unlinkat(
+            &output.parent,
+            output.file_name.as_os_str(),
+            UnlinkatFlags::NoRemoveDir,
+        ) {
+            Ok(()) => {}
+            Err(nix::errno::Errno::ENOENT) => {}
+            Err(error) => {
                 return Err(CliError::infrastructure(format!(
                     "cannot replace attestation `{}`: {error}",
                     output.display_path.display()
@@ -951,21 +955,14 @@ fn write_attestation(
     }
 
     let source_path = descriptor_path(&file);
-    let source = CString::new(source_path.as_os_str().as_bytes()).map_err(|_| {
-        CliError::infrastructure("temporary descriptor path contains an embedded NUL byte")
-    })?;
-    let linked = unsafe {
-        nix::libc::linkat(
-            nix::libc::AT_FDCWD,
-            source.as_ptr(),
-            output.parent.as_raw_fd(),
-            target.as_ptr(),
-            nix::libc::AT_SYMLINK_FOLLOW,
-        )
-    };
-    if linked != 0 {
-        let error = io::Error::last_os_error();
-        let message = if error.kind() == io::ErrorKind::AlreadyExists && !force {
+    if let Err(error) = linkat(
+        AT_FDCWD,
+        &source_path,
+        &output.parent,
+        output.file_name.as_os_str(),
+        AtFlags::AT_SYMLINK_FOLLOW,
+    ) {
+        let message = if error == nix::errno::Errno::EEXIST && !force {
             format!(
                 "attestation output `{}` already exists; pass --force to replace it",
                 output.display_path.display()
@@ -976,7 +973,7 @@ fn write_attestation(
                 output.display_path.display()
             )
         };
-        return Err(if error.kind() == io::ErrorKind::AlreadyExists && !force {
+        return Err(if error == nix::errno::Errno::EEXIST && !force {
             CliError::usage(message)
         } else {
             CliError::infrastructure(message)
