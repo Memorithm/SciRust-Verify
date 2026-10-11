@@ -766,12 +766,9 @@ fn attest(
         ));
     }
     let (root, store) = open_run(run)?;
-    let sealed_files = store
-        .verify_integrity()
+    let (bundle, sealed_files) = store
+        .verify_integrity_snapshot()
         .map_err(|error| CliError::not_found(format!("integrity verification failed: {error}")))?;
-    let bundle = store
-        .read_text("bundle.json")
-        .map_err(|error| CliError::not_found(error.to_string()))?;
     let run_dir = root.join(".scirust-verify").join("runs").join(run);
     let output = output.unwrap_or_else(|| {
         root.join(".scirust-verify")
@@ -815,7 +812,7 @@ fn attest(
 
     let temporary = attestation_temp_dir("sign")?;
     let payload = temporary.join("bundle.json");
-    fs::write(&payload, bundle.as_bytes()).map_err(|error| {
+    fs::write(&payload, &bundle).map_err(|error| {
         CliError::infrastructure(format!("cannot stage bundle for signing: {error}"))
     })?;
     let sign = ProcessCommand::new("ssh-keygen")
@@ -841,7 +838,7 @@ fn attest(
             "ssh-keygen did not publish a readable signature: {error}"
         ))
     })?;
-    let bundle_digest = Digest::sha256_hex(bundle.as_bytes()).value;
+    let bundle_digest = Digest::sha256_hex(&bundle).value;
     let envelope = serde_json::json!({
         "schema_version": 1,
         "kind": "scirust-verify-detached-sshsig",
@@ -902,12 +899,9 @@ fn authenticate(
     json: bool,
 ) -> Result<ExitCode, CliError> {
     let (root, store) = open_run(run)?;
-    let sealed_files = store
-        .verify_integrity()
+    let (bundle, sealed_files) = store
+        .verify_integrity_snapshot()
         .map_err(|error| CliError::not_found(format!("integrity verification failed: {error}")))?;
-    let bundle = store
-        .read_text("bundle.json")
-        .map_err(|error| CliError::not_found(error.to_string()))?;
     let envelope_text = fs::read_to_string(envelope_path).map_err(|error| {
         CliError::usage(format!(
             "cannot read attestation envelope `{}`: {error}",
@@ -932,7 +926,7 @@ fn authenticate(
         ));
     }
     let expected_digest = envelope_string(&envelope, "bundle_sha256")?;
-    let actual_digest = Digest::sha256_hex(bundle.as_bytes()).value;
+    let actual_digest = Digest::sha256_hex(&bundle).value;
     if expected_digest != actual_digest {
         return Err(CliError::not_found(
             "attestation bundle digest does not match the integrity-verified dossier",
@@ -982,13 +976,23 @@ fn authenticate(
         .stdin
         .take()
         .ok_or_else(|| CliError::infrastructure("ssh-keygen stdin unavailable"))?
-        .write_all(bundle.as_bytes())
+        .write_all(&bundle)
         .map_err(|error| CliError::infrastructure(format!("cannot feed signed bundle: {error}")))?;
     let verification = child.wait_with_output().map_err(|error| {
         CliError::infrastructure(format!("cannot wait for ssh-keygen: {error}"))
     })?;
     let _ = fs::remove_dir_all(&temporary);
     let authenticated = verification.status.success();
+    let provenance_status = if authenticated {
+        "signed_record"
+    } else {
+        "unverified"
+    };
+    let provenance_reason = if authenticated {
+        "the signer authenticated the sealed provenance record; the environment can still lie"
+    } else {
+        "the detached signature was not accepted; no signer provenance is established"
+    };
     let document = serde_json::json!({
         "run_id": run,
         "bundle_sha256": actual_digest,
@@ -1000,8 +1004,8 @@ fn authenticate(
             "trust_root": trust_root,
         },
         "execution_provenance": {
-            "status": "signed_record",
-            "reason": "the signer authenticated the sealed provenance record; the environment can still lie"
+            "status": provenance_status,
+            "reason": provenance_reason
         },
         "qualification": {
             "status": "not_evaluated",
@@ -1016,7 +1020,11 @@ fn authenticate(
             "authenticity: {} for principal {principal}",
             if authenticated { "verified" } else { "failed" }
         );
-        println!("execution provenance: signed record (not independently re-executed)");
+        if authenticated {
+            println!("execution provenance: signed record (not independently re-executed)");
+        } else {
+            println!("execution provenance: unverified (signature not accepted)");
+        }
         println!("qualification: not evaluated");
     }
     Ok(if authenticated {
