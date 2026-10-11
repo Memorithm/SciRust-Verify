@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt as _;
 
 use clap::{Parser, Subcommand};
@@ -706,8 +706,8 @@ fn signed_attestation_payload(principal: &str, bundle: &[u8]) -> Vec<u8> {
 fn read_attestation_envelope(path: &Path) -> Result<Vec<u8>, CliError> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
-    #[cfg(target_os = "linux")]
-    options.custom_flags(0o404000); // O_NOFOLLOW | O_NONBLOCK
+    #[cfg(unix)]
+    options.custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
     let file = options.open(path).map_err(|error| {
         CliError::usage(format!(
             "cannot open regular attestation envelope `{}`: {error}",
@@ -906,6 +906,24 @@ fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
     Ok(path)
 }
 
+#[cfg(not(windows))]
+fn replace_attestation(temporary: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(temporary, destination)
+}
+
+#[cfg(windows)]
+fn replace_attestation(temporary: &Path, destination: &Path) -> io::Result<()> {
+    // Windows rename does not replace an existing file. The destination was
+    // already checked to be a regular file and --force explicitly authorizes
+    // replacement, so remove it before publishing the fully synced temporary.
+    match fs::remove_file(destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    fs::rename(temporary, destination)
+}
+
 fn write_attestation(
     output: &PreparedAttestationOutput,
     bytes: &[u8],
@@ -955,8 +973,10 @@ fn write_attestation(
         })?;
     drop(file);
     let publish = if force {
-        fs::rename(&temporary, &path)
+        replace_attestation(&temporary, &path)
     } else {
+        // Hard-link publication is an atomic no-replace operation: a racing
+        // writer cannot silently clobber an envelope published first.
         fs::hard_link(&temporary, &path).and_then(|_| fs::remove_file(&temporary))
     };
     publish.map_err(|error| {
