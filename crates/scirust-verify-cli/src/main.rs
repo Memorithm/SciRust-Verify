@@ -10,8 +10,11 @@
 
 #![deny(missing_docs)]
 
+use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command as ProcessCommand, ExitCode, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use scirust_verify_cargo::CargoProvider;
@@ -23,6 +26,7 @@ use scirust_verify_core::providers::{
     CustomChecksProvider, NumericChecksProvider, SourceCleanProvider,
 };
 use scirust_verify_determinism::DeterminismProvider;
+use scirust_verify_model::digest::Digest;
 use scirust_verify_model::TOOL_IDENTITY;
 use scirust_verify_store::RunsRoot;
 
@@ -98,6 +102,34 @@ enum Command {
         #[arg(long)]
         check_integrity: bool,
     },
+    /// Publish a detached OpenSSH signature over an integrity-verified bundle.
+    Attest {
+        /// Finalized run id to sign.
+        run: String,
+        /// Principal recorded in the detached envelope.
+        #[arg(long)]
+        principal: String,
+        /// OpenSSH private-key identity used by ssh-keygen.
+        #[arg(long)]
+        identity: PathBuf,
+        /// Detached envelope path (defaults outside the sealed run).
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Replace an existing regular envelope file.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Verify integrity and detached authorship against an external trust root.
+    Authenticate {
+        /// Finalized run id whose exact bundle manifest was signed.
+        run: String,
+        /// Detached attestation envelope produced by `attest`.
+        #[arg(long)]
+        envelope: PathBuf,
+        /// OpenSSH allowed-signers file kept outside .scirust-verify.
+        #[arg(long)]
+        allowed_signers: PathBuf,
+    },
     /// Re-execute a previous run as a NEW run linked to the original.
     Replay {
         /// Run id to replay.
@@ -167,6 +199,18 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             markdown,
             check_integrity,
         } => report(&run, json, markdown, check_integrity),
+        Command::Attest {
+            run,
+            principal,
+            identity,
+            output,
+            force,
+        } => attest(&run, &principal, &identity, output, force, cli.json),
+        Command::Authenticate {
+            run,
+            envelope,
+            allowed_signers,
+        } => authenticate(&run, &envelope, &allowed_signers, cli.json),
         Command::Replay { run, strict } => replay(&run, strict, cli.json),
         Command::Diff { run_a, run_b } => diff(&run_a, &run_b),
         Command::Doctor => doctor(),
@@ -210,6 +254,13 @@ impl CliError {
         Self {
             message: message.into(),
             exit_code: 1,
+        }
+    }
+
+    fn infrastructure(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            exit_code: 3,
         }
     }
 }
@@ -628,6 +679,327 @@ fn report(
     }
     let _ = doc;
     Ok(ExitCode::SUCCESS)
+}
+
+
+const SSHSIG_NAMESPACE: &str = "scirust-verify-evidence-v1";
+
+fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| CliError::infrastructure(error.to_string()))?
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "scirust-verify-{tag}-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir(&path)
+        .map_err(|error| CliError::infrastructure(format!("cannot create temporary directory: {error}")))?;
+    Ok(path)
+}
+
+fn write_attestation(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliError> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(CliError::usage(format!(
+                "attestation output `{}` is not a regular file",
+                path.display()
+            )));
+        }
+        if !force {
+            return Err(CliError::usage(format!(
+                "attestation output `{}` already exists; pass --force to replace it",
+                path.display()
+            )));
+        }
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
+    fs::create_dir_all(parent).map_err(|error| {
+        CliError::infrastructure(format!(
+            "cannot create attestation directory `{}`: {error}",
+            parent.display()
+        ))
+    })?;
+    let temporary = parent.join(format!(
+        ".attestation-{}-{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| CliError::infrastructure(error.to_string()))?
+            .as_nanos()
+    ));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| CliError::infrastructure(format!("cannot create temporary attestation: {error}")))?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| CliError::infrastructure(format!("cannot persist attestation: {error}")))?;
+    drop(file);
+    fs::rename(&temporary, path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        CliError::infrastructure(format!(
+            "cannot publish attestation `{}`: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn attest(
+    run: &str,
+    principal: &str,
+    identity: &Path,
+    output: Option<PathBuf>,
+    force: bool,
+    json: bool,
+) -> Result<ExitCode, CliError> {
+    if principal.trim().is_empty() || principal.chars().any(char::is_whitespace) {
+        return Err(CliError::usage(
+            "principal must be a non-empty OpenSSH allowed-signers principal without whitespace",
+        ));
+    }
+    let (root, store) = open_run(run)?;
+    let sealed_files = store
+        .verify_integrity()
+        .map_err(|error| CliError::not_found(format!("integrity verification failed: {error}")))?;
+    let bundle = store
+        .read_text("bundle.json")
+        .map_err(|error| CliError::not_found(error.to_string()))?;
+    let run_dir = root.join(".scirust-verify").join("runs").join(run);
+    let output = output.unwrap_or_else(|| {
+        root.join(".scirust-verify")
+            .join("attestations")
+            .join(format!("{run}.json"))
+    });
+    let output = if output.is_absolute() {
+        output
+    } else {
+        current_dir().join(output)
+    };
+    if output.starts_with(&run_dir) {
+        return Err(CliError::usage(
+            "detached attestations must be stored outside the sealed run directory",
+        ));
+    }
+    let identity = identity.canonicalize().map_err(|error| {
+        CliError::usage(format!(
+            "cannot resolve signing identity `{}`: {error}",
+            identity.display()
+        ))
+    })?;
+
+    let temporary = attestation_temp_dir("sign")?;
+    let payload = temporary.join("bundle.json");
+    fs::write(&payload, bundle.as_bytes()).map_err(|error| {
+        CliError::infrastructure(format!("cannot stage bundle for signing: {error}"))
+    })?;
+    let sign = ProcessCommand::new("ssh-keygen")
+        .arg("-Y")
+        .arg("sign")
+        .arg("-f")
+        .arg(&identity)
+        .arg("-n")
+        .arg(SSHSIG_NAMESPACE)
+        .arg(&payload)
+        .output()
+        .map_err(|error| {
+            CliError::infrastructure(format!("cannot execute ssh-keygen: {error}"))
+        })?;
+    if !sign.status.success() {
+        let _ = fs::remove_dir_all(&temporary);
+        return Err(CliError::infrastructure(format!(
+            "ssh-keygen refused to sign the bundle: {}",
+            String::from_utf8_lossy(&sign.stderr).trim()
+        )));
+    }
+    let signature_path = payload.with_extension("json.sig");
+    let signature = fs::read_to_string(&signature_path).map_err(|error| {
+        CliError::infrastructure(format!("ssh-keygen did not publish a readable signature: {error}"))
+    })?;
+    let bundle_digest = Digest::sha256_hex(bundle.as_bytes()).value;
+    let envelope = serde_json::json!({
+        "schema_version": 1,
+        "kind": "scirust-verify-detached-sshsig",
+        "run_id": run,
+        "bundle_sha256": bundle_digest,
+        "namespace": SSHSIG_NAMESPACE,
+        "principal": principal,
+        "signature": signature,
+        "claims": {
+            "integrity": "verified_before_signing",
+            "authenticity": "unevaluated_until_external_trust_policy_verification",
+            "qualification": "not_evaluated"
+        }
+    });
+    let mut bytes = serde_json::to_vec_pretty(&envelope)
+        .map_err(|error| CliError::infrastructure(error.to_string()))?;
+    bytes.push(b'\n');
+    write_attestation(&output, &bytes, force)?;
+    let _ = fs::remove_dir_all(&temporary);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "run_id": run,
+                "attestation": output,
+                "bundle_sha256": bundle_digest,
+                "principal": principal,
+                "integrity": {"status": "verified", "sealed_files": sealed_files},
+                "authenticity": {"status": "unevaluated"},
+                "qualification": {"status": "not_evaluated"}
+            })
+        );
+    } else {
+        println!("published detached attestation: {}", output.display());
+        println!("integrity: verified ({sealed_files} sealed files)");
+        println!("authenticity: unevaluated until checked against an external allowed-signers file");
+        println!("qualification: not evaluated by signing");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn envelope_string<'a>(
+    envelope: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a str, CliError> {
+    envelope
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CliError::usage(format!("attestation envelope lacks string field `{field}`")))
+}
+
+fn authenticate(
+    run: &str,
+    envelope_path: &Path,
+    allowed_signers: &Path,
+    json: bool,
+) -> Result<ExitCode, CliError> {
+    let (root, store) = open_run(run)?;
+    let sealed_files = store
+        .verify_integrity()
+        .map_err(|error| CliError::not_found(format!("integrity verification failed: {error}")))?;
+    let bundle = store
+        .read_text("bundle.json")
+        .map_err(|error| CliError::not_found(error.to_string()))?;
+    let envelope_text = fs::read_to_string(envelope_path).map_err(|error| {
+        CliError::usage(format!(
+            "cannot read attestation envelope `{}`: {error}",
+            envelope_path.display()
+        ))
+    })?;
+    let envelope: serde_json::Value = serde_json::from_str(&envelope_text)
+        .map_err(|error| CliError::usage(format!("invalid attestation envelope: {error}")))?;
+    if envelope.get("schema_version").and_then(serde_json::Value::as_u64) != Some(1)
+        || envelope_string(&envelope, "kind")? != "scirust-verify-detached-sshsig"
+    {
+        return Err(CliError::usage("unsupported attestation envelope"));
+    }
+    if envelope_string(&envelope, "run_id")? != run
+        || envelope_string(&envelope, "namespace")? != SSHSIG_NAMESPACE
+    {
+        return Err(CliError::usage(
+            "attestation run identity or namespace does not match the requested dossier",
+        ));
+    }
+    let expected_digest = envelope_string(&envelope, "bundle_sha256")?;
+    let actual_digest = Digest::sha256_hex(bundle.as_bytes()).value;
+    if expected_digest != actual_digest {
+        return Err(CliError::not_found(
+            "attestation bundle digest does not match the integrity-verified dossier",
+        ));
+    }
+    let principal = envelope_string(&envelope, "principal")?;
+    let signature = envelope_string(&envelope, "signature")?;
+
+    let trust_root = allowed_signers.canonicalize().map_err(|error| {
+        CliError::usage(format!(
+            "cannot resolve allowed-signers trust root `{}`: {error}",
+            allowed_signers.display()
+        ))
+    })?;
+    let verifier_root = root
+        .join(".scirust-verify")
+        .canonicalize()
+        .map_err(|error| CliError::infrastructure(error.to_string()))?;
+    if trust_root.starts_with(&verifier_root) {
+        return Err(CliError::usage(
+            "allowed-signers trust root must be configured independently outside .scirust-verify",
+        ));
+    }
+
+    let temporary = attestation_temp_dir("verify")?;
+    let signature_path = temporary.join("bundle.sshsig");
+    fs::write(&signature_path, signature.as_bytes()).map_err(|error| {
+        CliError::infrastructure(format!("cannot stage detached signature: {error}"))
+    })?;
+    let mut child = ProcessCommand::new("ssh-keygen")
+        .arg("-Y")
+        .arg("verify")
+        .arg("-f")
+        .arg(&trust_root)
+        .arg("-I")
+        .arg(principal)
+        .arg("-n")
+        .arg(SSHSIG_NAMESPACE)
+        .arg("-s")
+        .arg(&signature_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            CliError::infrastructure(format!("cannot execute ssh-keygen: {error}"))
+        })?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| CliError::infrastructure("ssh-keygen stdin unavailable"))?
+        .write_all(bundle.as_bytes())
+        .map_err(|error| CliError::infrastructure(format!("cannot feed signed bundle: {error}")))?;
+    let verification = child
+        .wait_with_output()
+        .map_err(|error| CliError::infrastructure(format!("cannot wait for ssh-keygen: {error}")))?;
+    let _ = fs::remove_dir_all(&temporary);
+    let authenticated = verification.status.success();
+    let document = serde_json::json!({
+        "run_id": run,
+        "bundle_sha256": actual_digest,
+        "integrity": {"status": "verified", "sealed_files": sealed_files},
+        "authenticity": {
+            "status": if authenticated { "verified" } else { "failed" },
+            "principal": principal,
+            "namespace": SSHSIG_NAMESPACE,
+            "trust_root": trust_root,
+        },
+        "execution_provenance": {
+            "status": "signed_record",
+            "reason": "the signer authenticated the sealed provenance record; the environment can still lie"
+        },
+        "qualification": {
+            "status": "not_evaluated",
+            "reason": "authorship and integrity do not re-execute checks or upgrade imported producer claims"
+        }
+    });
+    if json {
+        println!("{document}");
+    } else {
+        println!("integrity: verified ({sealed_files} sealed files)");
+        println!(
+            "authenticity: {} for principal {principal}",
+            if authenticated { "verified" } else { "failed" }
+        );
+        println!("execution provenance: signed record (not independently re-executed)");
+        println!("qualification: not evaluated");
+    }
+    Ok(if authenticated {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    })
 }
 
 fn is_terminal_json_default() -> bool {
