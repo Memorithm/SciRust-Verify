@@ -566,6 +566,44 @@ fn detached_authorship_uses_an_independent_trust_root() {
         Some("signed_record")
     );
 
+    let sealed_run = store.join(".scirust-verify/runs").join(&run_id);
+    let mut copied_run_id = run_id.clone();
+    let replacement = if copied_run_id.ends_with('0') {
+        "1"
+    } else {
+        "0"
+    };
+    copied_run_id.pop();
+    copied_run_id.push_str(replacement);
+    let copied_run = store
+        .join(".scirust-verify/runs")
+        .join(&copied_run_id);
+    copy_dir(&sealed_run, &copied_run);
+    let copied_envelope = keys.join("copied-run-attestation.json");
+    let mut copied_envelope_value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&attestation).unwrap()).unwrap();
+    copied_envelope_value["run_id"] = serde_json::Value::String(copied_run_id.clone());
+    std::fs::write(
+        &copied_envelope,
+        serde_json::to_vec_pretty(&copied_envelope_value).unwrap(),
+    )
+    .unwrap();
+    let mismatched_identity = cli()
+        .args([
+            "authenticate",
+            &copied_run_id,
+            "--envelope",
+            copied_envelope.to_str().unwrap(),
+            "--allowed-signers",
+            allowed.to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(mismatched_identity.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&mismatched_identity.stderr)
+        .contains("sealed run identity"));
+
     let wrong_allowed = keys.join("wrong_allowed_signers");
     std::fs::write(&wrong_allowed, format!("other@example.test {public_key}")).unwrap();
     let rejected = cli()
@@ -596,6 +634,41 @@ fn detached_authorship_uses_an_independent_trust_root() {
             .and_then(|value| value.as_str()),
         Some("unverified")
     );
+
+    let oversized_envelope = keys.join("oversized-attestation.json");
+    std::fs::write(&oversized_envelope, vec![b'x'; 1_048_577]).unwrap();
+    let oversized = cli()
+        .args([
+            "authenticate",
+            &run_id,
+            "--envelope",
+            oversized_envelope.to_str().unwrap(),
+            "--allowed-signers",
+            allowed.to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(oversized.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&oversized.stderr).contains("1048576-byte limit"));
+
+    let nested_inside = sealed_run.join("new/sub/forbidden.json");
+    let self_mutating = cli()
+        .args([
+            "attest",
+            &run_id,
+            "--principal",
+            "ci@example.test",
+            "--identity",
+            identity.to_str().unwrap(),
+            "--output",
+            nested_inside.to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(self_mutating.status.code(), Some(2));
+    assert!(!sealed_run.join("new").exists());
 
     #[cfg(unix)]
     {
