@@ -860,35 +860,12 @@ fn prepare_attestation_output(
 
 #[cfg(not(target_os = "linux"))]
 fn prepare_attestation_output(
-    output: PathBuf,
-    runs_root: &Path,
+    _output: PathBuf,
+    _runs_root: &Path,
 ) -> Result<PreparedAttestationOutput, CliError> {
-    validate_normal_output_path(&output)?;
-    let parent = output
-        .parent()
-        .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
-    let canonical_runs_root = runs_root
-        .canonicalize()
-        .map_err(|error| CliError::infrastructure(error.to_string()))?;
-    if !parent.exists() {
-        fs::create_dir(parent).map_err(|error| {
-            CliError::infrastructure(format!(
-                "cannot create attestation directory `{}`: {error}",
-                parent.display()
-            ))
-        })?;
-    }
-    let canonical_parent = parent
-        .canonicalize()
-        .map_err(|error| CliError::infrastructure(error.to_string()))?;
-    if canonical_parent.starts_with(&canonical_runs_root) {
-        return Err(CliError::usage(
-            "detached attestations must be stored outside every sealed run directory",
-        ));
-    }
-    Ok(PreparedAttestationOutput {
-        display_path: output,
-    })
+    Err(CliError::usage(
+        "attestation publication is supported only on Linux, where the checked output directory can remain pinned through publication; authenticate remains portable",
+    ))
 }
 
 fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
