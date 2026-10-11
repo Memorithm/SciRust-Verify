@@ -606,6 +606,23 @@ fn detached_authorship_uses_an_independent_trust_root() {
     copied_run_id.push_str(replacement);
     let copied_run = store.join(".scirust-verify/runs").join(&copied_run_id);
     copy_dir(&sealed_run, &copied_run);
+    let foreign_output = copied_run.join("foreign-attestation.json");
+    let cross_run_mutation = cli()
+        .args([
+            "attest",
+            &run_id,
+            "--principal",
+            "ci@example.test",
+            "--identity",
+            identity.to_str().unwrap(),
+            "--output",
+            foreign_output.to_str().unwrap(),
+        ])
+        .current_dir(&store)
+        .output()
+        .unwrap();
+    assert_eq!(cross_run_mutation.status.code(), Some(2));
+    assert!(!foreign_output.exists());
     let copied_envelope = keys.join("copied-run-attestation.json");
     let mut copied_envelope_value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&attestation).unwrap()).unwrap();
@@ -698,6 +715,28 @@ fn detached_authorship_uses_an_independent_trust_root() {
 
     #[cfg(unix)]
     {
+        let fifo = keys.join("attestation.fifo");
+        let made_fifo = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made_fifo.success());
+        let fifo_result = cli()
+            .args([
+                "authenticate",
+                &run_id,
+                "--envelope",
+                fifo.to_str().unwrap(),
+                "--allowed-signers",
+                allowed.to_str().unwrap(),
+            ])
+            .current_dir(&store)
+            .timeout(std::time::Duration::from_secs(10))
+            .output()
+            .unwrap();
+        assert_eq!(fifo_result.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&fifo_result.stderr).contains("regular file"));
+
         let sealed_run = store.join(".scirust-verify/runs").join(&run_id);
         let disguised_run = keys.join("disguised-run");
         std::os::unix::fs::symlink(&sealed_run, &disguised_run).unwrap();
