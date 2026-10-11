@@ -120,8 +120,9 @@ node_modules) are skipped.
 *Residual and optional authorship control:* anyone with filesystem write
 access can rebuild the entire bundle including `bundle.json`. Sealing alone
 detects *accidents and partial tampering*; it is not cryptographic authorship.
-The optional `attest`/`authenticate` flow signs the exact `bundle.json`
-bytes with the established OpenSSH SSHSIG format and verifies them against an
+The optional `attest`/`authenticate` flow signs a domain-separated
+payload binding the principal and exact `bundle.json` bytes with the
+established OpenSSH SSHSIG format, then verifies it against an
 `allowed_signers` trust root that must be configured independently outside
 `.scirust-verify`. That authenticates a principal's signature over the sealed
 provenance record. It does **not** prove that the execution environment told
