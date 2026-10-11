@@ -970,6 +970,16 @@ impl RunStore {
     /// manifest and accidentally binding a different concurrent snapshot.
     pub fn verify_integrity_snapshot(&self) -> Result<(Vec<u8>, usize), StoreError> {
         let run_doc = self.read_run_document()?;
+        if run_doc.run_id != self.run_id {
+            return Err(StoreError::corrupt(
+                self.run_id.as_str(),
+                format!(
+                    "sealed run identity {} does not match directory identity {}",
+                    run_doc.run_id.as_str(),
+                    self.run_id.as_str()
+                ),
+            ));
+        }
         if run_doc.state != RunState::Finalized {
             return Err(StoreError::corrupt(
                 self.run_id.as_str(),
