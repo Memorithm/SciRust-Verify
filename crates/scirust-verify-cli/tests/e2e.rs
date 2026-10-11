@@ -583,6 +583,32 @@ fn detached_authorship_uses_an_independent_trust_root() {
     assert_eq!(rejected.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&rejected.stdout).contains("authenticity: failed"));
 
+    #[cfg(unix)]
+    {
+        let sealed_run = store.join(".scirust-verify/runs").join(&run_id);
+        let disguised_run = keys.join("disguised-run");
+        std::os::unix::fs::symlink(&sealed_run, &disguised_run).unwrap();
+        let forbidden_output = disguised_run.join("forbidden.json");
+        let self_mutating = cli()
+            .args([
+                "attest",
+                &run_id,
+                "--principal",
+                "ci@example.test",
+                "--identity",
+                identity.to_str().unwrap(),
+                "--output",
+                forbidden_output.to_str().unwrap(),
+            ])
+            .current_dir(&store)
+            .output()
+            .unwrap();
+        assert_eq!(self_mutating.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&self_mutating.stderr)
+            .contains("outside the sealed run directory"));
+        assert!(!sealed_run.join("forbidden.json").exists());
+    }
+
     let embedded_trust = store.join(".scirust-verify/allowed_signers");
     std::fs::write(&embedded_trust, format!("ci@example.test {public_key}")).unwrap();
     let non_independent = cli()
