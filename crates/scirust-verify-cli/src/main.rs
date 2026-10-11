@@ -11,7 +11,7 @@
 #![deny(missing_docs)]
 
 #[cfg(target_os = "linux")]
-use std::ffi::OsString;
+use std::ffi::{CString, OsString};
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::io;
@@ -22,6 +22,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd as _;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt as _;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt as _;
 #[cfg(unix)]
@@ -885,34 +887,13 @@ fn attestation_temp_dir(tag: &str) -> Result<PathBuf, CliError> {
     Ok(path)
 }
 
-#[cfg(not(windows))]
-fn replace_attestation(temporary: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::rename(temporary, destination)
-}
-
-#[cfg(windows)]
-fn replace_attestation(temporary: &Path, destination: &Path) -> std::io::Result<()> {
-    // Windows rename does not replace an existing file. The destination was
-    // already checked to be a regular file and --force explicitly authorizes
-    // replacement, so remove it before publishing the fully synced temporary.
-    match fs::remove_file(destination) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    fs::rename(temporary, destination)
-}
-
+#[cfg(target_os = "linux")]
 fn write_attestation(
     output: &PreparedAttestationOutput,
     bytes: &[u8],
     force: bool,
 ) -> Result<(), CliError> {
-    #[cfg(target_os = "linux")]
     let path = descriptor_path(&output.parent).join(&output.file_name);
-    #[cfg(not(target_os = "linux"))]
-    let path = output.display_path.clone();
-
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(CliError::usage(format!(
@@ -927,65 +908,116 @@ fn write_attestation(
             )));
         }
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| CliError::usage("attestation output has no parent directory"))?;
-    let temporary = parent.join(format!(
-        ".attestation-{}-{}.tmp",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| CliError::infrastructure(error.to_string()))?
-            .as_nanos()
-    ));
+
+    // Keep the complete envelope in an unnamed inode until publication. A
+    // same-UID process watching the output directory cannot open or mutate it
+    // before the final link makes the fully synced bytes visible.
     let mut file = fs::OpenOptions::new()
         .write(true)
-        .create_new(true)
-        .open(&temporary)
+        .custom_flags(nix::libc::O_TMPFILE | nix::libc::O_CLOEXEC)
+        .mode(0o600)
+        .open(descriptor_path(&output.parent))
         .map_err(|error| {
-            CliError::infrastructure(format!("cannot create temporary attestation: {error}"))
+            CliError::infrastructure(format!(
+                "cannot create unnamed temporary attestation: {error}"
+            ))
         })?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
         .map_err(|error| {
             CliError::infrastructure(format!("cannot persist attestation: {error}"))
         })?;
-    #[cfg(target_os = "linux")]
     let opened_metadata = file.metadata().map_err(|error| {
         CliError::infrastructure(format!("cannot inspect temporary attestation: {error}"))
     })?;
-    let publish = if force {
-        replace_attestation(&temporary, &path)
-    } else {
-        // Hard-link publication is an atomic no-replace operation: a racing
-        // writer cannot silently clobber an envelope published first.
-        fs::hard_link(&temporary, &path).and_then(|_| fs::remove_file(&temporary))
-    };
-    publish.map_err(|error| {
-        let _ = fs::remove_file(&temporary);
-        CliError::infrastructure(format!(
-            "cannot publish attestation `{}`: {error}",
-            output.display_path.display()
-        ))
+
+    let target = CString::new(output.file_name.as_os_str().as_bytes()).map_err(|_| {
+        CliError::usage("attestation output filename contains an embedded NUL byte")
     })?;
-    #[cfg(target_os = "linux")]
+    if force {
+        // Removing first preserves the unnamed-inode guarantee: the new inode
+        // is linked directly at the destination and is never exposed through a
+        // staging pathname. A racing creator makes linkat fail closed.
+        let removed = unsafe {
+            nix::libc::unlinkat(output.parent.as_raw_fd(), target.as_ptr(), 0)
+        };
+        if removed != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(CliError::infrastructure(format!(
+                    "cannot replace attestation `{}`: {error}",
+                    output.display_path.display()
+                )));
+            }
+        }
+    }
+
+    let source_path = descriptor_path(&file);
+    let source = CString::new(source_path.as_os_str().as_bytes()).map_err(|_| {
+        CliError::infrastructure("temporary descriptor path contains an embedded NUL byte")
+    })?;
+    let linked = unsafe {
+        nix::libc::linkat(
+            nix::libc::AT_FDCWD,
+            source.as_ptr(),
+            output.parent.as_raw_fd(),
+            target.as_ptr(),
+            nix::libc::AT_SYMLINK_FOLLOW,
+        )
+    };
+    if linked != 0 {
+        let error = io::Error::last_os_error();
+        let message = if error.kind() == io::ErrorKind::AlreadyExists && !force {
+            format!(
+                "attestation output `{}` already exists; pass --force to replace it",
+                output.display_path.display()
+            )
+        } else {
+            format!(
+                "cannot publish attestation `{}`: {error}",
+                output.display_path.display()
+            )
+        };
+        return Err(if error.kind() == io::ErrorKind::AlreadyExists && !force {
+            CliError::usage(message)
+        } else {
+            CliError::infrastructure(message)
+        });
+    }
+
     let published_metadata = fs::symlink_metadata(&path).map_err(|error| {
         CliError::infrastructure(format!(
             "cannot verify published attestation `{}`: {error}",
             output.display_path.display()
         ))
     })?;
-    #[cfg(target_os = "linux")]
     if !published_metadata.is_file()
         || opened_metadata.dev() != published_metadata.dev()
         || opened_metadata.ino() != published_metadata.ino()
     {
         return Err(CliError::infrastructure(
-            "published attestation does not match the opened temporary inode",
+            "published attestation does not match the opened unnamed inode",
         ));
     }
-    drop(file);
+    output.parent.sync_all().map_err(|error| {
+        CliError::infrastructure(format!(
+            "cannot persist attestation directory `{}`: {error}",
+            output.display_path.display()
+        ))
+    })?;
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_attestation(
+    output: &PreparedAttestationOutput,
+    _bytes: &[u8],
+    _force: bool,
+) -> Result<(), CliError> {
+    Err(CliError::usage(format!(
+        "attestation publication for `{}` is supported only on Linux",
+        output.display_path.display()
+    )))
 }
 
 fn attest(
