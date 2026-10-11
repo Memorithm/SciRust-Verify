@@ -575,9 +575,7 @@ fn detached_authorship_uses_an_independent_trust_root() {
     };
     copied_run_id.pop();
     copied_run_id.push_str(replacement);
-    let copied_run = store
-        .join(".scirust-verify/runs")
-        .join(&copied_run_id);
+    let copied_run = store.join(".scirust-verify/runs").join(&copied_run_id);
     copy_dir(&sealed_run, &copied_run);
     let copied_envelope = keys.join("copied-run-attestation.json");
     let mut copied_envelope_value: serde_json::Value =
