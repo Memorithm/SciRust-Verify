@@ -15,7 +15,7 @@ use std::ffi::OsString;
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::io;
-use std::io::{Read as _, Write as _};
+use std::io::{Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,7 +28,9 @@ use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 
 #[cfg(target_os = "linux")]
-use nix::fcntl::{AtFlags, AT_FDCWD};
+use nix::fcntl::{fcntl, AtFlags, FcntlArg, SealFlag, AT_FDCWD};
+#[cfg(target_os = "linux")]
+use nix::sys::memfd::{memfd_create, MFdFlags};
 #[cfg(target_os = "linux")]
 use nix::unistd::linkat;
 
@@ -752,7 +754,7 @@ fn open_allowed_signers(path: &Path) -> Result<(PathBuf, fs::File), CliError> {
     options
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK);
-    let file = options.open(path).map_err(|error| {
+    let mut file = options.open(path).map_err(|error| {
         CliError::usage(format!(
             "cannot open regular allowed-signers trust root `{}`: {error}",
             path.display()
@@ -777,7 +779,64 @@ fn open_allowed_signers(path: &Path) -> Result<(PathBuf, fs::File), CliError> {
     let canonical = descriptor_path(&file)
         .canonicalize()
         .map_err(|error| CliError::usage(format!("cannot resolve opened trust root: {error}")))?;
-    Ok((canonical, file))
+
+    // The named policy can legitimately be managed by another process, but a
+    // verification decision must use one exact, bounded byte snapshot. Merely
+    // pinning the source inode does not prevent a same-UID writer from changing
+    // that inode after the size check. Copy the opened bytes into an anonymous
+    // file and seal every mutation before exposing it to ssh-keygen.
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(MAX_ALLOWED_SIGNERS_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            CliError::infrastructure(format!(
+                "cannot read opened allowed-signers trust root: {error}"
+            ))
+        })?;
+    if bytes.len() as u64 > MAX_ALLOWED_SIGNERS_BYTES {
+        return Err(CliError::usage(format!(
+            "allowed-signers trust root exceeds the {MAX_ALLOWED_SIGNERS_BYTES}-byte limit"
+        )));
+    }
+
+    let owned = memfd_create(
+        "scirust-verify-allowed-signers",
+        // ssh-keygen reopens this sealed descriptor through its own procfs
+        // descriptor table, so it must survive this one controlled exec.
+        MFdFlags::MFD_ALLOW_SEALING,
+    )
+    .map_err(|error| {
+        CliError::infrastructure(format!(
+            "cannot create immutable trust-root snapshot: {error}"
+        ))
+    })?;
+    let mut snapshot = fs::File::from(owned);
+    snapshot.write_all(&bytes).map_err(|error| {
+        CliError::infrastructure(format!(
+            "cannot populate immutable trust-root snapshot: {error}"
+        ))
+    })?;
+    snapshot.rewind().map_err(|error| {
+        CliError::infrastructure(format!(
+            "cannot rewind immutable trust-root snapshot: {error}"
+        ))
+    })?;
+    fcntl(
+        &snapshot,
+        FcntlArg::F_ADD_SEALS(
+            SealFlag::F_SEAL_WRITE
+                | SealFlag::F_SEAL_GROW
+                | SealFlag::F_SEAL_SHRINK
+                | SealFlag::F_SEAL_SEAL,
+        ),
+    )
+    .map_err(|error| {
+        CliError::infrastructure(format!(
+            "cannot seal immutable trust-root snapshot: {error}"
+        ))
+    })?;
+    Ok((canonical, snapshot))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1231,11 +1290,8 @@ fn authenticate(
         CliError::infrastructure(format!("cannot stage detached signature: {error}"))
     })?;
     #[cfg(target_os = "linux")]
-    let trust_descriptor_path = PathBuf::from(format!(
-        "/proc/{}/fd/{}",
-        std::process::id(),
-        trust_root_file.as_raw_fd()
-    ));
+    let trust_descriptor_path =
+        PathBuf::from(format!("/proc/self/fd/{}", trust_root_file.as_raw_fd()));
     #[cfg(not(target_os = "linux"))]
     let trust_descriptor_path = trust_root.clone();
     let mut child = ProcessCommand::new("ssh-keygen")
@@ -1500,6 +1556,30 @@ fn run_summary(store: &scirust_verify_store::RunStore) -> Result<RunSummary, Str
             .to_owned(),
         claims,
     })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowed_signers_snapshot_freezes_bounded_bytes() {
+        let directory = attestation_temp_dir("trust-snapshot-test").unwrap();
+        let source = directory.join("allowed_signers");
+        let original = b"ci@example.test ssh-ed25519 original\n";
+        fs::write(&source, original).unwrap();
+
+        let (_canonical, mut snapshot) = open_allowed_signers(&source).unwrap();
+        fs::write(&source, b"ci@example.test ssh-ed25519 replaced\n").unwrap();
+
+        assert!(snapshot.write_all(b"mutation").is_err());
+        snapshot.rewind().unwrap();
+        let mut frozen = Vec::new();
+        snapshot.read_to_end(&mut frozen).unwrap();
+        assert_eq!(frozen, original);
+
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 fn push_diff_line(out: &mut Vec<String>, label: &str, a: &Option<String>, b: &Option<String>) {
