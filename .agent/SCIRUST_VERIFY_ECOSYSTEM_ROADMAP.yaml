@@ -1,7 +1,7 @@
 schema_version: 1
 kind: scirust_verify_ecosystem_agent_roadmap
 status: active
-last_updated: "2026-09-05"
+last_updated: "2026-10-13"
 repository: Memorithm/SciRust-Verify
 intended_consumer: autonomous_coding_agent
 merge_policy: never_merge_this_file_to_default_branch_unless_user_explicitly_requests
@@ -227,7 +227,28 @@ roadmap:
       - prevent_duplicate_or_replayed_evidence_from_inflating_requirement_satisfaction
   - id: VER3
     name: Signed evidence and artifact attestation
-    status: planned
+    status: complete
+    completed_at: "2026-10-13"
+    pull_requests:
+      - 39
+      - 40
+    final_exact_head: 40021884a1ba7c736cc87293f516cd16f0207c5d
+    merge_commit: 662a30dc774dd19c68a79bed3889036a91930123
+    required_CI:
+      candidate: CI_38349914098_success_2_of_2_jobs
+      integrated: CI_38350291671_success_2_of_2_jobs
+    review: exact_head_40021884_reviewed_clean_after_all_threads_resolved
+    scope: >-
+      Detached OpenSSH SSHSIG envelopes bind a principal and the exact
+      integrity-checked bundle manifest to an independently configured,
+      bounded trust policy. Linux pins output directories and freezes the
+      trust-policy bytes in a sealed anonymous memfd while procfs descriptor
+      reopening is disabled for the complete writable interval.
+    limits:
+      - integrity_authenticity_and_qualification_remain_distinct
+      - signatures_do_not_prove_execution_truth_or_upgrade_imported_evidence
+      - detached_publication_and_authentication_are_Linux_only_in_this_release
+      - publication_is_no_clobber_and_requires_explicit_rotation
     goals:
       - add_detached_signature_or_attestation_envelope_without_mutating_core_evidence_objects
       - bind_signatures_to_exact_bundle_identity
