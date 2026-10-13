@@ -12,7 +12,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: Se
   root, and report integrity/authenticity/qualification as separate states
   without upgrading imported evidence; Linux descriptor pinning protects
   no-clobber publication and a sealed anonymous snapshot freezes the bounded
-  trust-root bytes used for verification, while other platforms
+  trust-root bytes used for verification; the process descriptor table is
+  hidden while that snapshot is writable, while other platforms
   fail closed for these detached operations (MEM-19).
 - Run Unix checks in dedicated process groups, clean descendants after timeout
   or parent exit, confirm group termination, and fail closed when bounded

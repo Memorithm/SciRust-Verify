@@ -159,6 +159,7 @@ rejected when it lives under `.scirust-verify`; the dossier cannot carry or
 authorize its own root of trust. On Linux, the trust root is opened
 nonblocking/no-follow, required to be a regular file no larger than 1 MiB,
 copied through that descriptor into a sealed anonymous in-memory snapshot,
+with procfs descriptor reopening disabled for the complete writable interval,
 and passed to `ssh-keygen` through the immutable snapshot descriptor; other platforms
 fail closed in this release. Authentication rejects envelopes larger than
 1 MiB before JSON parsing, and verifies that the sealed `run.json` identity
