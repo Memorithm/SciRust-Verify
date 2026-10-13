@@ -18,6 +18,8 @@ use std::io;
 use std::io::{Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode, Stdio};
+#[cfg(target_os = "linux")]
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
@@ -31,6 +33,8 @@ use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use nix::fcntl::{fcntl, AtFlags, FcntlArg, SealFlag, AT_FDCWD};
 #[cfg(target_os = "linux")]
 use nix::sys::memfd::{memfd_create, MFdFlags};
+#[cfg(target_os = "linux")]
+use nix::sys::prctl;
 #[cfg(target_os = "linux")]
 use nix::unistd::linkat;
 
@@ -800,6 +804,12 @@ fn open_allowed_signers(path: &Path) -> Result<(PathBuf, fs::File), CliError> {
         )));
     }
 
+    // A memfd is anonymous in the filesystem but, while this process remains
+    // dumpable, another process with ptrace-equivalent access can reopen it
+    // through /proc/<pid>/fd before seals are installed. Hide the descriptor
+    // table before creating the writable snapshot and keep it hidden until the
+    // complete immutable seal set has been applied.
+    let _procfs_guard = ProcfsDescriptorGuard::acquire()?;
     let owned = memfd_create(
         "scirust-verify-allowed-signers",
         // ssh-keygen reopens this sealed descriptor through its own procfs
@@ -837,6 +847,57 @@ fn open_allowed_signers(path: &Path) -> Result<(PathBuf, fs::File), CliError> {
         ))
     })?;
     Ok((canonical, snapshot))
+}
+
+#[cfg(target_os = "linux")]
+struct ProcfsDescriptorGuard {
+    restore_dumpable: bool,
+    _lock: MutexGuard<'static, ()>,
+}
+
+#[cfg(target_os = "linux")]
+static PROCFS_DESCRIPTOR_GUARD_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(target_os = "linux")]
+impl ProcfsDescriptorGuard {
+    fn acquire() -> Result<Self, CliError> {
+        let lock = PROCFS_DESCRIPTOR_GUARD_LOCK.lock().map_err(|_| {
+            CliError::infrastructure("procfs descriptor-visibility lock is poisoned")
+        })?;
+        let current = prctl::get_dumpable().map_err(|error| {
+            CliError::infrastructure(format!(
+                "cannot inspect procfs descriptor visibility: {error}"
+            ))
+        })?;
+        match current {
+            false => Ok(Self {
+                restore_dumpable: false,
+                _lock: lock,
+            }),
+            true => {
+                prctl::set_dumpable(false).map_err(|error| {
+                    CliError::infrastructure(format!(
+                        "cannot protect writable trust-root snapshot from procfs reopening: {error}"
+                    ))
+                })?;
+                Ok(Self {
+                    restore_dumpable: true,
+                    _lock: lock,
+                })
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ProcfsDescriptorGuard {
+    fn drop(&mut self) {
+        if self.restore_dumpable {
+            // Failure is intentionally fail-closed: leaving the process
+            // non-dumpable does not expose mutable policy bytes.
+            let _ = prctl::set_dumpable(true);
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -990,7 +1051,7 @@ fn prepare_attestation_output(
     _runs_root: &Path,
 ) -> Result<PreparedAttestationOutput, CliError> {
     Err(CliError::usage(
-        "attestation publication is supported only on Linux, where the checked output directory can remain pinned through publication; authenticate remains portable",
+        "detached attestation publication and authentication are supported only on Linux, where output directories and trust-root snapshots can remain race-resistant",
     ))
 }
 

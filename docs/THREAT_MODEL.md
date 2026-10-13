@@ -131,8 +131,10 @@ qualification. Unsigned bundles remain integrity-only and are never labeled
 authenticated. Detached publication and authentication are Linux-only in this
 release: Linux keeps the validated output directory and opened regular
 `allowed_signers` trust root pinned while copying its bounded bytes into a
-sealed anonymous in-memory snapshot used by `ssh-keygen`. Publication is no-clobber,
-and occupied outputs are rejected before the signing key is invoked. Other
+sealed anonymous in-memory snapshot used by `ssh-keygen`. The process is made
+non-dumpable from snapshot creation until all mutation seals are installed, so
+same-UID processes cannot reopen the still-writable descriptor through procfs.
+Publication is no-clobber, and occupied outputs are rejected before the signing key is invoked. Other
 platforms fail closed instead of reopening mutable output or trust-root paths.
 
 ### Forged provenance
